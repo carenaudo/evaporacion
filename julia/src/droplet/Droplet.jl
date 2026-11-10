@@ -17,7 +17,7 @@ include("surrogate_ts.jl")
 include("solver.jl")
 include("postprocess.jl")
 
-export DropletParams, DropletAlgebraic, DropletLiquidState, ChebyshevTsSurrogate, BicubicLutTsSurrogate
+export DropletParams, DropletAlgebraic, DropletLiquidState, ChebyshevTsSurrogate, BicubicLutTsSurrogate, TsSolverCounter, reset!
 export calc_droplet_algebraic, surface_energy_residual, intensive_surface_residual,
        precompute_liquid_state, solve_surface_temperature, solve_droplet_state,
        solve_surface_temperature_brent, solve_surface_temperature_newton,

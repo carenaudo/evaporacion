@@ -1,237 +1,274 @@
 """
     run_jaiio_benchmark.jl
 
-Benchmark runner for JAIIO 2026 technical report.
-Evaluates:
-  1. Rigorous Level 3 (Abramzon-Sirignano with parabolic internal temperature profile & Brent root-finding)
-  2. Level 2 (Pure convection without Stefan flow blowing correction)
-  3. Uniform (Level 3 physics with uniform internal temperature Ts = T_bar, no Brent root-finding)
-  4. Isothermal Twb (Iso-Twb, constant temperature wet-bulb droplet)
-  5. Modelo 6b Refit (Piecewise Reynolds-scaled empirical surrogate)
-  6. Modelo 7 (Multi-variable empirical surrogate with RH and Theta scaling)
-  7. Modelo 2b (Optimized d²-law base surrogate)
-  8. Modelo 8 Dynamic (Coupled 2-equation volume-temperature dynamic surrogate)
+Comprehensive JAIIO 2026 Timing, Operation Count, CWU (Muller 2016),
+and Julia Ts Solver Strategy Benchmark.
 
-Saves CSV and Markdown summary tables directly into JAIIO/.
+Executes:
+  Part A: 25 Representative Cases × N=10 repetitions (+1 JIT warmup) across all models
+          (Riguroso [:brent], Cúbico, No-Stefan, Difusión-Pura, Perfil-Uniforme,
+           Equilibrio-Térmico, Aproximado-1, Modelo-6b, Aproximado-2, Aproximado-3)
+  Part B: Dedicated Julia Ts Solver Comparison (:brent, :newton, :halley,
+          :analytical_biot, :analytical_halley, :chebyshev, :lut, :dae) across the 25 cases.
+
+Saves:
+  - JAIIO/data/benchmark_raw.csv
+  - JAIIO/data/benchmark_summary.csv
+  - JAIIO/data/benchmark_ts_solvers.csv
 """
 
+using ArgParse
+using CSV
+using DataFrames
 using Printf
 using Dates
-using DataFrames
-using CSV
 using Statistics
-using OrdinaryDiffEq
 
-# Include the Evaporacion package from julia/
-const REPO_ROOT = normpath(joinpath(@__DIR__, ".."))
-const JULIA_SRC = joinpath(REPO_ROOT, "julia", "src")
-push!(LOAD_PATH, joinpath(REPO_ROOT, "julia"))
-
-using Evaporacion
-using Evaporacion.Common
+include(joinpath(@__DIR__, "jaiio_common.jl"))
+using .JAIIOCommon
 using Evaporacion.Droplet
-using Evaporacion.Surrogates
 
-println("="^80)
-println("JAIIO 2026: EVALUACIÓN COMPARATIVA DE MODELOS SURROGADOS Y FÍSICOS")
-println("Timestamp: ", Dates.now())
-println("="^80)
-
-# -----------------------------------------------------------------------------
-# 1. Representative Cases Definition
-# -----------------------------------------------------------------------------
-# Each case tuple: (case_id, d0_m, U_ms, T0_C, T_inf_C, HR)
-const CASES = [
-    # Baseline test case (Case 1 from benchmark)
-    (1, 100e-6, 3.0, 10.0, 50.0, 0.3, "Smallest, fast air, hot, dry"),
-    # Standard droplet (Case 13)
-    (13, 500e-6, 1.0, 15.0, 30.0, 0.5, "Medium droplet, standard ambient"),
-    # Large droplet (Case 22)
-    (22, 2000e-6, 1.0, 35.0, 45.0, 0.5, "Large droplet, hot ambient")
-]
-
-# -----------------------------------------------------------------------------
-# 2. Model Runners
-# -----------------------------------------------------------------------------
-
-function run_model_rigorous(d0, U, T0, Tinf, HR; model_variant=:rigorous, t_max=30000.0)
-    # Saturation and vapor mass fraction calculation
-    twb = stull_twb(Tinf, HR * 100.0)
-    psat_inf = psat_water(Tinf + T_ZERO_C)
-    pv_inf = HR * psat_inf
-    y_inf = surface_mass_fraction_from_psat(pv_inf, P_ATM)
-
-    # Initial droplet mass
-    rho_l0 = liquid_density_water(T0 + T_ZERO_C)
-    m0 = rho_l0 * (π / 6.0) * (d0^3)
-
-    params = if model_variant === :rigorous
-        DropletParams(
-            T_inf = Tinf,
-            U_rel = U,
-            Y_inf = y_inf,
-            P_atm = P_ATM,
-            profile = :parabolico,
-            as1989_blowing = true,
-            isothermal = false
-        )
-    elseif model_variant === :level_2
-        DropletParams(
-            T_inf = Tinf,
-            U_rel = U,
-            Y_inf = y_inf,
-            P_atm = P_ATM,
-            profile = :parabolico,
-            as1989_blowing = false, # No Stefan flow blowing correction
-            isothermal = false
-        )
-    elseif model_variant === :uniform
-        DropletParams(
-            T_inf = Tinf,
-            U_rel = U,
-            Y_inf = y_inf,
-            P_atm = P_ATM,
-            profile = :uniforme, # Uniform profile: Ts = T_bar, bypasses Brent
-            as1989_blowing = true,
-            isothermal = false
-        )
-    elseif model_variant === :iso_twb
-        DropletParams(
-            T_inf = Tinf,
-            U_rel = U,
-            Y_inf = y_inf,
-            P_atm = P_ATM,
-            profile = :uniforme,
-            as1989_blowing = true,
-            isothermal = true,
-            T_d_fixed = twb # Held fixed at wet-bulb temperature
-        )
-    else
-        error("Unknown model variant: \$model_variant")
+function parse_cli()
+    s = ArgParseSettings(description="Run 25-case JAIIO timing, CWU, and Ts-solver benchmark.")
+    @add_arg_table! s begin
+        "--smoke"
+            help = "Smoke test with 5 cases and N=3 reps"
+            action = :store_true
+        "--reps"
+            help = "Timed repetitions per case/model"
+            arg_type = Int
+            default = 10
     end
-
-    t0 = time_ns()
-    sol = solve_droplet(params, [m0, T0], (0.0, t_max); solver=Tsit5(), reltol=1e-6, abstol=1e-9)
-    elapsed_s = (time_ns() - t0) / 1e9
-
-    t_evap = sol.t[end]
-    n_steps = length(sol.t)
-    return (t_evap=t_evap, elapsed_s=elapsed_s, n_steps=n_steps)
+    return parse_args(s)
 end
 
-function run_model_surrogate(d0, U, T0, Tinf, HR; model_type=:modelo_6b_refit, t_max=30000.0)
-    d0_mm = d0 * 1e3
-    twb = stull_twb(Tinf, HR * 100.0)
+function warmup_jit(c1, model_ids, surr_coeffs)
+    println("Warming up JIT compilation for all models...")
+    for m_id in model_ids
+        solve_jaiio_trajectory(m_id, c1.d0_m, c1.U_ms, c1.T0_C, c1.T_inf_C, c1.HR;
+                               ts_solver=:brent, surrogate_coeffs=surr_coeffs)
+    end
+    for ts in TS_SOLVER_SPECS
+        solve_jaiio_trajectory(:rigorous, c1.d0_m, c1.U_ms, c1.T0_C, c1.T_inf_C, c1.HR;
+                               ts_solver=ts.id, surrogate_coeffs=surr_coeffs)
+    end
+end
 
-    cfg = SurrogateConfig(
-        model_type = model_type,
-        d0_mm = d0_mm,
-        T_inf = Tinf,
-        T_wb = twb,
-        U = U,
-        HR = HR,
-        T0 = T0,
-        t_end = t_max
+function benchmark_models(cases, n_reps::Int, surr_coeffs)
+    model_ids = [m.id for m in MODEL_SPECS]
+    raw_rows = NamedTuple[]
+
+    println("\n=== PART A: 12-MODEL PERFORMANCE & CWU BENCHMARK ===")
+    @printf("Cases: %d | Timed reps: %d (+1 warmup)\n", length(cases), n_reps)
+
+    for c in cases
+        @printf("\nCase %02d/%02d: d0=%.0fµm, U=%.1f m/s, T0=%.0f°C, Tinf=%.0f°C, HR=%.0f%% (%s)\n",
+                c.case_id, length(cases), c.d0_m*1e6, c.U_ms, c.T0_C, c.T_inf_C, c.HR*100, c.note)
+
+        # Reference solve for rigorous t_evap and elapsed time on this case
+        ref_t_evap = NaN
+        ref_time_mean = NaN
+
+        for m_id in model_ids
+            m_disp = display_name(m_id)
+            cat = model_category(m_id)
+            ctr = (cat === :physical && !(m_id in (:uniform, :iso_twb))) ? TsSolverCounter() : nothing
+
+            # 1 warmup solve + count Ts iterations cleanly (single run with counter)
+            # We do timed runs WITHOUT counter overhead? Wait: TsSolverCounter is two integer increments (~ns),
+            # so keeping it enabled or measuring without it on timed reps is even cleaner!
+            count_res = solve_jaiio_trajectory(
+                m_id, c.d0_m, c.U_ms, c.T0_C, c.T_inf_C, c.HR;
+                ts_solver=:brent, ts_counter=ctr, surrogate_coeffs=surr_coeffs
+            )
+            sol_cnt = count_res.sol
+            t_evap = Float64(sol_cnt.t[end])
+            nfev   = JAIIOCommon._extract_nfev(sol_cnt)
+            n_steps = length(sol_cnt.t)
+            n_ts_calls = ctr === nothing ? 0 : ctr.calls
+            n_ts_iters = ctr === nothing ? 0 : ctr.iters
+            total_ops  = nfev + n_ts_iters
+            cwu        = total_ops * cwu_weight(m_id)
+
+            # Timed repetitions (no counter)
+            times = Vector{Float64}(undef, n_reps)
+            for rep in 1:n_reps
+                t0_ns = time_ns()
+                solve_jaiio_trajectory(
+                    m_id, c.d0_m, c.U_ms, c.T0_C, c.T_inf_C, c.HR;
+                    ts_solver=:brent, ts_counter=nothing, surrogate_coeffs=surr_coeffs
+                )
+                times[rep] = (time_ns() - t0_ns) / 1e9
+            end
+
+            t_mean = mean(times)
+            t_std  = n_reps > 1 ? std(times) : 0.0
+            t_min  = minimum(times)
+
+            if m_id === :rigorous
+                ref_t_evap = t_evap
+                ref_time_mean = t_mean
+            end
+
+            speedup = ref_time_mean > 0.0 ? (ref_time_mean / t_mean) : 1.0
+            err_signed_pct = (isfinite(ref_t_evap) && ref_t_evap > 0.0) ? ((t_evap - ref_t_evap) / ref_t_evap * 100.0) : 0.0
+            bias_s = isfinite(ref_t_evap) ? (t_evap - ref_t_evap) : 0.0
+
+            @printf("  %-18s | t_evap=%8.2fs | err=%+6.2f%% | time=%7.4f±%.4fs | speedup=%6.1f× | nfev=%4d | CWU=%8.0f\n",
+                    m_disp, t_evap, err_signed_pct, t_mean, t_std, speedup, nfev, cwu)
+
+            push!(raw_rows, (
+                case_id = c.case_id,
+                note = c.note,
+                d0_m = c.d0_m,
+                d0_um = c.d0_m * 1e6,
+                U_ms = c.U_ms,
+                T0_C = c.T0_C,
+                T_inf_C = c.T_inf_C,
+                HR = c.HR,
+                model = string(m_id),
+                display_name = m_disp,
+                category = string(cat),
+                t_evap_s = t_evap,
+                t_evap_ref_s = ref_t_evap,
+                t_evap_err_pct = err_signed_pct,
+                t_evap_are_pct = abs(err_signed_pct),
+                t_evap_bias_s = bias_s,
+                exec_time_mean_s = t_mean,
+                exec_time_std_s = t_std,
+                exec_time_min_s = t_min,
+                speedup_vs_rigorous = speedup,
+                nfev = nfev,
+                n_timesteps = n_steps,
+                n_brentq_calls = n_ts_calls,
+                n_brentq_total_iters = n_ts_iters,
+                total_operations = total_ops,
+                cwu_weight = cwu_weight(m_id),
+                cwu = cwu,
+            ))
+        end
+    end
+
+    df_raw = DataFrame(raw_rows)
+    CSV.write(joinpath(DATA_DIR, "benchmark_raw.csv"), df_raw)
+
+    # Aggregate summary table ordered as MODEL_SPECS
+    order_idx = Dict(string(m.id) => i for (i, m) in enumerate(MODEL_SPECS))
+    df_sum = combine(groupby(df_raw, [:model, :display_name, :category]),
+        :exec_time_mean_s    => mean   => :mean_exec_time_s,
+        :exec_time_std_s     => mean   => :mean_std_time_s,
+        :t_evap_are_pct      => mean   => :mape_pct,
+        :t_evap_err_pct      => mean   => :bias_pct,
+        :t_evap_bias_s       => mean   => :mean_bias_s,
+        :speedup_vs_rigorous => mean   => :mean_speedup,
+        :nfev                => median => :median_nfev,
+        :nfev                => maximum => :max_nfev,
+        :n_brentq_total_iters => mean  => :mean_root_iters,
+        :cwu                 => mean   => :mean_cwu,
     )
+    df_sum.sort_key = [get(order_idx, r.model, 999) for r in eachrow(df_sum)]
+    sort!(df_sum, :sort_key)
+    select!(df_sum, Not(:sort_key))
+    CSV.write(joinpath(DATA_DIR, "benchmark_summary.csv"), df_sum)
 
-    t0 = time_ns()
-    sol = solve_surrogate(cfg; solver=Tsit5(), rtol=1e-6, atol=1e-9)
-    elapsed_s = (time_ns() - t0) / 1e9
-
-    t_evap = sol.t[end]
-    n_steps = length(sol.t)
-    return (t_evap=t_evap, elapsed_s=elapsed_s, n_steps=n_steps)
+    return df_raw, df_sum
 end
 
-# -----------------------------------------------------------------------------
-# 3. Main Benchmark Execution
-# -----------------------------------------------------------------------------
+function benchmark_ts_solvers(cases, n_reps::Int)
+    println("\n=== PART B: JULIA Ts SOLVER STRATEGIES COMPARISON (Rigorous Parabolic A&S) ===")
+    raw_rows = NamedTuple[]
 
-function run_all_models_single_case(case_tuple)
-    cid, d0, U, T0, Tinf, HR, desc = case_tuple
-    @printf("\nRunning Case %d: d₀ = %.3f mm, U = %.1f m/s, T₀ = %.1f °C, T_inf = %.1f °C, HR = %d%% (%s)\n",
-            cid, d0*1e3, U, T0, Tinf, round(Int, HR*100), desc)
-    println("-"^80)
+    for c in cases
+        ref_t_evap = NaN
+        ref_time = NaN
 
-    models_to_test = [
-        (:rigorous,         "Rigorous (Level 3)",      :physical,  :rigorous),
-        (:level_2,          "Level 2 (Pure Convection)",:physical,  :level_2),
-        (:uniform,          "Uniform (No Brent)",      :physical,  :uniform),
-        (:iso_twb,          "Iso-Twb (Isothermal)",    :physical,  :iso_twb),
-        (:modelo_6b_refit,  "Modelo 6b Refit",         :surrogate, :modelo_6b_refit),
-        (:modelo_7,         "Modelo 7 (Multi-Var)",    :surrogate, :modelo_7),
-        (:modelo_2b,        "Modelo 2b (d²-law)",      :surrogate, :modelo_2b),
-        (:modelo_8_dynamic, "Modelo 8 Dynamic (2-Eq)", :surrogate, :modelo_8_dynamic)
-    ]
+        for ts in TS_SOLVER_SPECS
+            # Clear surrogate cache if testing chebyshev/lut first timing fairness?
+            # Actually warm cache represents steady-state multi-evaluation performance;
+            # let's run 1 warmup (which builds & caches surrogate for that condition) + N timed reps.
+            ctr = !(ts.id in (:dae, :chebyshev, :lut, :analytical_biot, :analytical_halley)) ? TsSolverCounter() : nothing
+            cnt_res = solve_jaiio_trajectory(:rigorous, c.d0_m, c.U_ms, c.T0_C, c.T_inf_C, c.HR;
+                                             ts_solver=ts.id, ts_counter=ctr)
+            t_evap = Float64(cnt_res.sol.t[end])
+            nfev = JAIIOCommon._extract_nfev(cnt_res.sol)
+            n_iters = ctr === nothing ? 0 : ctr.iters
 
-    results = []
+            times = Vector{Float64}(undef, n_reps)
+            for rep in 1:n_reps
+                t0_ns = time_ns()
+                solve_jaiio_trajectory(:rigorous, c.d0_m, c.U_ms, c.T0_C, c.T_inf_C, c.HR;
+                                       ts_solver=ts.id, ts_counter=nothing)
+                times[rep] = (time_ns() - t0_ns) / 1e9
+            end
+            t_mean = mean(times)
+            t_std  = n_reps > 1 ? std(times) : 0.0
 
-    # Reference lifetime for speedup and error calculation
-    ref_time = 0.0
-    ref_evap = 0.0
+            if ts.id === :brent
+                ref_t_evap = t_evap
+                ref_time = t_mean
+            end
 
-    for (m_id, m_name, m_cat, m_key) in models_to_test
-        @printf("  Evaluating %-28s ... ", m_name)
+            speedup = ref_time > 0.0 ? (ref_time / t_mean) : 1.0
+            are_pct = (isfinite(ref_t_evap) && ref_t_evap > 0.0) ? abs(t_evap - ref_t_evap) / ref_t_evap * 100.0 : 0.0
 
-        # Warmup
-        if m_cat === :physical
-            run_model_rigorous(d0, U, T0, Tinf, HR; model_variant=m_key)
-            res = run_model_rigorous(d0, U, T0, Tinf, HR; model_variant=m_key)
-        else
-            run_model_surrogate(d0, U, T0, Tinf, HR; model_type=m_key)
-            res = run_model_surrogate(d0, U, T0, Tinf, HR; model_type=m_key)
+            push!(raw_rows, (
+                case_id = c.case_id,
+                ts_solver = string(ts.id),
+                display_name = ts.display,
+                t_evap_s = t_evap,
+                are_vs_brent_pct = are_pct,
+                exec_time_mean_s = t_mean,
+                exec_time_std_s = t_std,
+                speedup_vs_brent = speedup,
+                nfev = nfev,
+                root_iters = n_iters,
+            ))
         end
-
-        if m_id === :rigorous
-            ref_time = res.elapsed_s
-            ref_evap = res.t_evap
-        end
-
-        speedup = ref_time > 0.0 ? (ref_time / res.elapsed_s) : 1.0
-        err_pct = ref_evap > 0.0 ? abs(res.t_evap - ref_evap) / ref_evap * 100.0 : 0.0
-
-        @printf("t_evap: %8.2f s | Time: %7.4f s | Steps: %4d | Speedup: %6.1fx | Err: %5.2f%%\n",
-                res.t_evap, res.elapsed_s, res.n_steps, speedup, err_pct)
-
-        push!(results, (
-            case_id = cid,
-            d0_mm = d0 * 1e3,
-            U_ms = U,
-            T0_C = T0,
-            Tinf_C = Tinf,
-            HR = HR,
-            model_id = string(m_id),
-            model_name = m_name,
-            category = string(m_cat),
-            t_evap_s = res.t_evap,
-            elapsed_s = res.elapsed_s,
-            n_steps = res.n_steps,
-            speedup = speedup,
-            error_pct = err_pct
-        ))
     end
 
-    return DataFrame(results)
+    df_ts_raw = DataFrame(raw_rows)
+    CSV.write(joinpath(DATA_DIR, "benchmark_ts_solvers_raw.csv"), df_ts_raw)
+
+    order_idx = Dict(string(ts.id) => i for (i, ts) in enumerate(TS_SOLVER_SPECS))
+    df_ts_sum = combine(groupby(df_ts_raw, [:ts_solver, :display_name]),
+        :exec_time_mean_s => mean   => :mean_exec_time_s,
+        :exec_time_std_s  => mean   => :mean_std_time_s,
+        :speedup_vs_brent => mean   => :mean_speedup_vs_brent,
+        :are_vs_brent_pct => mean   => :mean_are_vs_brent_pct,
+        :are_vs_brent_pct => maximum => :max_are_vs_brent_pct,
+        :nfev             => median => :median_nfev,
+        :root_iters       => mean   => :mean_root_iters,
+    )
+    df_ts_sum.sort_key = [get(order_idx, r.ts_solver, 999) for r in eachrow(df_ts_sum)]
+    sort!(df_ts_sum, :sort_key)
+    select!(df_ts_sum, Not(:sort_key))
+    CSV.write(joinpath(DATA_DIR, "benchmark_ts_solvers.csv"), df_ts_sum)
+
+    return df_ts_sum
 end
 
-# Run the benchmark for each case
-all_dfs = DataFrame[]
-for c in CASES
-    df_case = run_all_models_single_case(c)
-    push!(all_dfs, df_case)
+function main()
+    args = parse_cli()
+    cases = args["smoke"] ? BENCHMARK_CASES_25[1:5] : BENCHMARK_CASES_25
+    n_reps = args["smoke"] ? 3 : args["reps"]
+    surr_coeffs = load_surrogate_coeffs()
+
+    println("="^80)
+    println("JAIIO 2026 BENCHMARK SUITE (Julia)")
+    println("Timestamp: ", Dates.now())
+    println("="^80)
+
+    warmup_jit(cases[1], [m.id for m in MODEL_SPECS], surr_coeffs)
+
+    _, df_sum = benchmark_models(cases, n_reps, surr_coeffs)
+    println("\n--- Summary Table (12 Models) ---")
+    println(df_sum)
+
+    df_ts = benchmark_ts_solvers(cases, n_reps)
+    println("\n--- Summary Table (Julia Ts Solvers) ---")
+    println(df_ts)
+
+    println("\nBenchmark CSVs written to: ", DATA_DIR)
 end
 
-final_df = vcat(all_dfs...)
-
-# Save results CSV
-out_csv = joinpath(@__DIR__, "jaiio_benchmark_results.csv")
-CSV.write(out_csv, final_df)
-@printf("\nSaved benchmark results to: %s\n", out_csv)
-
-# Print Summary Table
-println("\n" * "="^80)
-println("JAIIO 2026 BENCHMARK EXECUTION SUMMARY")
-println("="^80)
-println(final_df[:, [:case_id, :model_id, :t_evap_s, :elapsed_s, :n_steps, :speedup, :error_pct]])
-
-println("\nDone! All JAIIO models calculated successfully.")
+main()

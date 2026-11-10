@@ -17,7 +17,7 @@ function run_parametric_sweep(configs::Vector{SurrogateConfig}; solver=Tsit5(), 
 
     cfg0 = configs[1]
     V0 = (π / 6.0) * (cfg0.d0_mm^3)
-    u0 = cfg0.model_type in (:modelo_8, :modelo_8_dynamic) ? [V0, cfg0.T0] : [V0]
+    u0 = [V0]
     cb = ContinuousCallback((u, t, integrator) -> u[1] - 1e-9, terminate!)
 
     prob0 = ODEProblem(surrogate_ode_rhs!, u0, (0.0, cfg0.t_end), cfg0)
@@ -25,7 +25,7 @@ function run_parametric_sweep(configs::Vector{SurrogateConfig}; solver=Tsit5(), 
     prob_func = function (prob, i, repeat)
         cfg_i = configs[i]
         V0_i = (π / 6.0) * (cfg_i.d0_mm^3)
-        u0_i = cfg_i.model_type in (:modelo_8, :modelo_8_dynamic) ? [V0_i, cfg_i.T0] : [V0_i]
+        u0_i = [V0_i]
         remake(prob, u0=u0_i, tspan=(0.0, cfg_i.t_end), p=cfg_i)
     end
 

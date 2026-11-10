@@ -76,8 +76,12 @@ try
     include("neural/Neural.jl")
     using .Neural
     export Neural, Option3bNeuralODE, Option3cHybridODE, solve_neural_ode_3b, solve_neural_ode_3c
-catch
-    # Lux/SciMLSensitivity not installed in the active environment
+    export PINNSurrogates, PINNCSurrogate, PINN2EqSurrogate, PIDeepONetSurrogate, ResMLPSurrogate,
+           PINNSurrogateBundle, solve_pinn_c, solve_pinn_2eq,
+           deeponet_eval_case, resmlp_eval_case,
+           save_pinn_bundle, load_pinn_bundle, get_default_pinn_bundle
+catch e
+    @warn "Optional Neural module failed to load" exception=e
 end
 
 end # module Evaporacion

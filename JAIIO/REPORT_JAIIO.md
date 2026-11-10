@@ -1,140 +1,260 @@
-# Evaluación Comparativa de Modelos Surrogados para la Evaporación de Gotas
+# Evaluación Comparativa de Modelos Físicos y Aproximados para la Evaporación de Gotas (Julia)
 ## Informe Técnico para JAIIO 2026
+
+*Generado automáticamente desde Julia (`Evaporacion.jl` v0.1.0, Fecha: 2026-11-10) con física actualizada (término de frontera móvil de Zhou et al., 2017).*
 
 ---
 
 ## 1. Introducción
 
-La simulación de la evaporación de gotas es una componente computacional crítica en modelos de sprays, secado por atomización y combustión. El modelo riguroso de referencia (Nivel 3) resuelve un sistema acoplado de EDOs para masa y temperatura, con una **solución no lineal anidada** (método de Brent) para la temperatura superficial en cada evaluación de la función del lado derecho (RHS). Esta complejidad limita severamente su uso en simulaciones de gran escala.
+La simulación de la evaporación de gotas es una componente computacional crítica en modelos de sprays, secado por atomización y combustión. El modelo riguroso de referencia (Nivel 3) resuelve un sistema acoplado de EDOs para masa y temperatura media con perfil parabólico interno y el término advectivo de frontera móvil (Zhou et al., 2017), requiriendo resolver implícitamente la temperatura superficial $T_s$ en cada evaluación del lado derecho (RHS).
 
-Este trabajo evalúa cuantitativamente cuatro modelos surrogados contra el modelo riguroso en tres dimensiones:
-- **Precisión** (MAE, MAPE, sesgo)
-- **Tiempo de ejecución** (media ± desviación estándar, factor de aceleración)
-- **Costo computacional** (evaluaciones de la función ODE, iteraciones Brent)
+Este estudio regenerado íntegramente en Julia evalúa 6 formulaciones físicas (Nivel 3 parabólico, cúbico de Zhou, No-Stefan lineal, Difusión pura lineal, perfil uniforme e isotérmico a $T_{wb}$) y 4 modelos aproximados algebraicos (Aproximado-1, Modelo-6b original, Aproximado-2 recalibrado y Aproximado-3 multi-variable recalibrado) contra cuatro dimensiones:
+- **Precisión** (MAE, RMSE, MAPE, sesgo, P95/P99, $R^2$, CCC)
+- **Tiempo de ejecución** (media ± desviación estándar sobre $N=10$ repeticiones, factor de aceleración)
+- **Distribución de Sesgo** (análisis ECDF de error firmado)
+- **Costo computacional** (evaluaciones `nfev`, iteraciones de raíz y Unidades de Trabajo Computacional **CWU** de Muller, 2016)
 
-## 2. Metodología
-
-### 2.1 Modelo Riguroso de Referencia (Nivel 3)
-
-El modelo riguroso resuelve el sistema:
-
-$$\frac{dm}{dt} = -\dot{m}(T_s), \qquad \frac{dT_{bar}}{dt} = \frac{Q_{conv} - \dot{m} L_v}{m \cdot c_{pl}}$$
-
-donde $T_s$ se obtiene resolviendo el balance energético superficial mediante el algoritmo de Brent (`brentq`) en cada paso temporal. El integrador utiliza LSODA con tolerancias $\text{rtol}=10^{-8}$, $\text{atol}=10^{-12}$.
-
-> [!WARNING]
-> Cada evaluación del RHS de la ODE ejecuta internamente un procedimiento de búsqueda de raíces (Brent), típicamente 10–30 iteraciones por llamada. Esto constituye el principal driver del costo computacional.
-
-### 2.2 Modelos Surrogados Evaluados
-
-| Modelo | Tipo | Descripción / Simplificación Física |
-| :--- | :--- | :--- |
-| **rigorous** | Físico Nivel 3 | Modelo completo (Abramzon-Sirignano + perfil parabólico). |
-| **level_2** | Físico Reducido | Sin corrección por Stefan flow (convección pura). |
-| **uniform** | Físico Reducido | Perfil radial uniforme ($T_s = T_{bar}$), **sin Brent**. |
-| **iso_twb** | Físico Reducido | Gota isotérmica a $T_{wb}$ (sin EDO de temperatura). |
-| **modelo_6b_refit** | Surrogado | Algebraico segmentado (el mejor compromiso global). |
-| **modelo_7** | Surrogado | Algebraico multi-variable ($HR, \Theta$). |
-| **modelo_2b** | Surrogado | Algebraico base ($d^2$-law optimizada). |
-
-### 2.3 Temporalidad de las Variables y Constantes
-
-La diferencia clave reside en si el coeficiente de transferencia se recalcula instantáneamente o se "congela" al tiempo cero ($t=0$).
-
-#### Modelos de 1 Ecuación (modelo_2b, 6b_refit, 7)
-Estos modelos calculan su coeficiente $C$ de forma dinámica dentro del bucle del integrador ODE.
-
-*   **Variables Instantáneas (evolucionan):** El diámetro ($d$) y el número de Reynolds ($Re$). Como la gota se encoge, $Re$ disminuye, lo que reduce la intensidad de la transferencia.
-*   **Momento de cálculo:** En cada paso del solver. Esto les permite captar la ralentización de la evaporación a medida que la gota desaparece, lo que explica su alta precisión ($R^2 > 0.99$).
-
-### 2.4 Diseño del Benchmark
-
-- **25 casos representativos**: 4 esquinas extremas + 6 casos de borde + 15 interiores (muestreo tipo Latin-Hypercube) del espacio paramétrico 5D ($d_0, U, T_0, T_\infty, HR$).
-- **Repeticiones**: N=10 ejecuciones cronometradas por caso y modelo, con 1 ejecución previa descartada (warm-up).
-- **Métricas**: Tiempo de pared (`time.perf_counter`), evaluaciones ODE RHS (`sol.nfev`), llamadas e iteraciones Brent.
-- **Precisión**: Extraída de las trayectorias CSV pre-calculadas en el barrido paramétrico de 30,240 simulaciones.
-
-## 3. Resultados
-
-### 3.1 Tabla Resumen Global
-
-| Modelo | Tiempo Medio [s] | Std [s] | MAPE [%] | Sesgo Medio [s] | Aceleración | nfev medio | Ops. Totales |
-| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| **rigorous** | 0.9055 | 0.0152 | 0.00 | 0.00 | 1.0× | 784 | 6,228 |
-| **level_2** | 0.8841 | 0.0167 | 0.30 | +4.37 | 1.0× | 774 | 6,150* |
-| **uniform** | 0.0918 | 0.0028 | 0.55 | −1.62 | **11×**| 83 | 83 |
-| **iso_twb** | 0.0085 | 0.0008 | 0.53 | −1.98 | **129×**| 79 | 79 |
-| **modelo_6b_refit** | 0.0016 | 0.0002 | **6.02** | +7.32 | **619×** | 68 | 68 |
-| **modelo_7** | 0.0017 | 0.0004 | **6.29** | −4.00 | **576×** | 67 | 67 |
-| **modelo_2b** | 0.0028 | 0.0005 | 16.01 | −102.06 | 381× | 68 | 68 |
-
-> [!IMPORTANT]
-> Al alinear el solver numérico (**LSODA**) para todos los modelos, los surrogados algebraicos demuestran una aceleración masiva (>600×) comparada con los ~120× observados anteriormente con integradores sub-óptimos. Esto confirma que el costo de los surrogados es despreciable y está dominado únicamente por el overhead del integrador de EDOs.
-
-### 3.2 Análisis de Tiempo de Ejecución
-
-![Tiempos de Ejecución](file:///d:/programacion/evaporacion/output/benchmark/figures/exec_time_barplot.png)
-*Comparación de tiempos de ejecución en escala logarítmica. Las barras de error representan la desviación estándar sobre N=10 repeticiones.*
-
-![Distribución de Tiempos](file:///d:/programacion/evaporacion/output/benchmark/figures/exec_time_boxplot.png)
-*Distribución de tiempos de ejecución a través de los 25 casos representativos.*
-
-### 3.3 Factor de Aceleración (Speedup)
-
-![Speedup](file:///d:/programacion/evaporacion/output/benchmark/figures/speedup_barplot.png)
-*Factor de aceleración respecto al modelo riguroso. Todos los surrogados logran speedups de 2 órdenes de magnitud.*
-
-### 3.4 Costo Computacional: Operaciones
-
-![Operaciones](file:///d:/programacion/evaporacion/output/benchmark/figures/nfev_barplot.png)
-*Comparación del número de evaluaciones de la función ODE (nfev) y operaciones totales (incluyendo iteraciones Brent para el modelo riguroso).*
-
-El modelo riguroso ejecuta ~784 evaluaciones RHS, pero cada una contiene una búsqueda de raíces Brent (~7 iteraciones promedio por llamada), resultando en **~6,228 operaciones totales**. Los surrogados, al no requerir soluciones anidadas, tienen un costo operacional directo.
-
-### 3.5 Frontera de Pareto: Precisión vs Costo
-
-![Pareto](file:///d:/programacion/evaporacion/output/benchmark/figures/accuracy_vs_speed.png)
-*Diagrama de Pareto: tiempo de ejecución (eje x, log) vs error MAPE (eje y). La zona inferior-izquierda es la región deseable. La línea punteada indica el tiempo del modelo riguroso.*
-
-El diagrama confirma que **modelo_6b_refit** y **modelo_7** se ubican en el cuadrante Pareto-óptimo, combinando alta precisión (<7% MAPE) con baja latencia computacional (>100× más rápido).
-
-### 3.7 Análisis de Peores Casos (nfev)
-
-Para identificar la robustez computacional, se extrajeron los casos que generan el mayor número de evaluaciones de función (`nfev` peak) para cada modelo:
-
-| Modelo | nfev max | Caso Crítico | Características del Caso |
-| :--- | ---: | :--- | :--- |
-| **rigorous** | 1,054 | Caso 23 | $d_0=2.0$mm, $U=0.5$m/s, $T_0=10$°C, $T_{inf}=20$°C |
-| **uniform** | 130 | Caso 22 | $d_0=2.0$mm, $U=1.0$m/s, $T_0=35$°C, $T_{inf}=45$°C |
-| **surrogados** | 120 | Caso 2 | $d_0=2.8$mm, $U=0.0$m/s, $T_0=35$°C, $T_{inf}=40$°C |
-
-**Observación clave:** Los surrogados, al usar el solver adaptativo LSODA, ahora requieren un número de evaluaciones similar al modelo `iso_twb`, independientemente de la duración de la simulación. Caso 2 (la gota de mayor vida útil, >10,000s) es el único que eleva ligeramente el nfev para los modelos algebraicos.
-
-## 4. Discusión
-
-### 4.1 Compromiso Precisión-Velocidad
-
-Los resultados demuestran que la estructura algebraica de **modelo_6b_refit** (escalamiento segmentado por $Re$ con corrección global) ofrece el mejor equilibrio entre fidelidad física y eficiencia computacional. Su MAPE de 6% es aceptable para simulaciones de sprays donde la incertidumbre instrumental típica es del orden del 5-10%.
-
-### 4.2 Impacto de las Simplificaciones Físicas
-- **Flujo de Stefan (level_2)**: Su exclusión tiene un impacto despreciable en el tiempo (0.91 vs 0.89s) y en el error (0.40%). Esto sugiere que el acoplamiento de transferencia de masa no es la fuente de la lentitud.
-- **Perfil Térmico (uniform)**: Es el factor determinante. Eliminar la búsqueda de $T_s$ reduce el tiempo en un orden de magnitud (10.6×) manteniendo el error por debajo del 1%.
-- **EDO de Temperatura (iso_twb vs Surrogados)**: El modelo isotérmico a $T_{wb}$ es el más rápido de los modelos físicos (131×), entrando en el mismo orden de magnitud que los surrogados algebraicos.
-
-El modelo riguroso dedica la mayor parte de su tiempo computacional a las llamadas a `brentq` dentro del RHS de la ODE. La comparación con el baseline **uniform** (que mantiene la misma física pero impone un perfil radial constante $T_s = T_{bar}$) revela la magnitud de este "impuesto" algorítmico.
-
-Al eliminar el solver iterativo anidado, el modelo **uniform** logra una aceleración de aproximadamente 20× manteniendo un error de evaporación inferior al 1%. Esto confirma que la complejidad del perfil de temperatura, y no las correlaciones físicas de transferencia, constituye el cuello de botella computacional del modelo de Nivel 3.
-
-## 5. Conclusiones
-
-1. **modelo_6b_refit** es el surrogado recomendado para integración en simulaciones de sprays a gran escala, ofreciendo **6.02% MAPE** con una **aceleración de 619×**.
-2. **modelo_7** representa una alternativa con dimensionalidad extendida, útil en regímenes de alta humedad.
-3. El **costo computacional dominante** del modelo riguroso proviene del solver Brent anidado. La simplificación del perfil térmico (**uniform**) reduce el tiempo en **11×** con un error despreciable (<0.6%).
-4. La alineación de los solvers numéricos demuestra que el overhead de los surrogados es órdenes de magnitud menor a lo reportado inicialmente, permitiendo simulaciones masivas con billones de gotas.
+Además, se incluye una comparación nativa de las **8 estrategias de resolución de $T_s$** implementadas en `Evaporacion.Droplet` (`:brent`, `:newton`, `:halley`, `:analytical_biot`, `:analytical_halley`, `:chebyshev`, `:lut`, `:dae`).
 
 ---
 
-*Datos completos disponibles en:*
-- [benchmark_results.csv](file:///d:/programacion/evaporacion/output/benchmark/benchmark_results.csv)
-- [summary_table.csv](file:///d:/programacion/evaporacion/output/benchmark/summary_table.csv)
-- [analysis_out_v3](file:///d:/programacion/evaporacion/analysis_out_v3/) (análisis de calidad completo - 30k sweep)
+## 2. Metodología
+
+### 2.1 Modelos Evaluados
+
+| Modelo | Nombre Interno | Tipo | Descripción / Simplificación Física |
+| :--- | :--- | :--- | :--- |
+| **Riguroso** | `rigorous` | Referencia | Abramzon-Sirignano (1989) + perfil parabólico + Zhou moving boundary + solver $T_s$ |
+| **Cúbico** | `cubic` | Físico | Perfil polinómico cúbico de Zhou et al. (2017) |
+| **No-Stefan** | `level_2` | Físico Reducido | Fuerza impulsora lineal $(Y_s - Y_\infty)$ sin blowing logarítmico, $\text{Sh}_0, \text{Nu}_0$ |
+| **Difusión-Pura** | `level_1` | Físico Reducido | Fuerza impulsora lineal con $\text{Sh}^*=2, \text{Nu}^*=2$ |
+| **Perfil-Uniforme** | `uniform` | Físico Reducido | Perfil interno uniforme ($T_s = \bar{T}$), sin solver iterativo de $T_s$ |
+| **Equilibrio-Térmico** | `iso_twb` | Físico Reducido | Gota isotérmica a $T_{wb}$ (sin EDO térmica) |
+| **Aproximado-1** | `modelo_2b` | Algebraico | Ley $d^2$ optimizada evaluada en $T_{wb}$ |
+| **Modelo-6b** | `modelo_6b` | Algebraico | Coeficientes empíricos originales segmentados por $Re$ |
+| **Aproximado-2** | `modelo_6b_refit` | Algebraico | Segmentado por $Re$, recalibrado nativamente contra V2 Julia (`fit_jaiio_surrogates.jl`) |
+| **Aproximado-3** | `modelo_7` | Algebraico | Multi-variable ($HR, \Theta$) con corrección $\exp(\gamma\Theta + \delta\Theta^2)$, recalibrado |
+
+### 2.2 Recalibración Nativa en Julia (`modelo_6b_refit` y `modelo_7`)
+
+| Modelo | Régimen Re | Casos | MAPE Entrenamiento (t_evap) | MAPE 5-Fold CV (t_evap) |
+| :--- | :--- | ---: | ---: | ---: |
+| **Aproximado-2** (`modelo_6b_refit`) | low | 720 | 1.50% | 1.51% |
+| **Aproximado-3** (`modelo_7`) | low | 720 | 0.94% | 0.95% |
+| **Aproximado-2** (`modelo_6b_refit`) | mid | 1056 | 1.32% | 1.33% |
+| **Aproximado-3** (`modelo_7`) | mid | 1056 | 0.86% | 0.86% |
+| **Aproximado-2** (`modelo_6b_refit`) | high | 744 | 1.21% | 1.22% |
+| **Aproximado-3** (`modelo_7`) | high | 744 | 0.90% | 0.91% |
+
+### 2.3 Diseño del Benchmark y CWU (Muller 2016)
+
+- **25 casos representativos**: 4 esquinas extremas + 6 bordes + 15 casos interiores.
+- **Integradores**: `AutoTsit5(Rosenbrock23(autodiff=false))` con tolerancia escalada `[min(1e-18, m0*1e-9), 1e-9]` para EDOs físicas (equivalente Julia a LSODA), `Tsit5()` para aproximados algebraicos y `Rodas5P(autodiff=false)` para `:dae` (`reltol=1e-6`).
+- **Repeticiones**: $N=10$ repeticiones cronometradas por caso y modelo tras 1 calentamiento JIT.
+- **CWU**: $\text{CWU} = (n_{\text{fev}} + n_{\text{root\_iters}}) \cdot w_{\text{Muller}}$, ponderando la densidad operacional relativa al RHS de `Aproximado-2`.
+
+---
+
+## 3. Resultados
+
+### 3.1 Tabla Resumen Global (25 Casos Benchmark)
+
+| Modelo | Tiempo Medio [s] | MAPE [%] | Aceleración | nfev med. | Costo [CWU] |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| **Riguroso** | 0.03740 | 0.00 | 1.0× | 7468 | 76539 |
+| **Cúbico** | 0.03721 | 0.00 | 1.0× | 7528 | 76236 |
+| **No-Stefan** | 0.01801 | 0.28 | 2.0× | 7420 | 68062 |
+| **Difusión-Pura** | 0.00478 | 122.02 | 8.1× | 1642 | 17188 |
+| **Perfil-Uniforme** | 0.00771 | 0.00 | 4.8× | 7690 | 14371 |
+| **Equilibrio-Térmico** | 0.00055 | 10.95 | 69.0× | 493 | 1032 |
+| **Aproximado-1** | 0.00013 | 5.54 | 287.8× | 273 | 509 |
+| **Modelo-6b** | 0.00015 | 58.85 | 255.9× | 339 | 360 |
+| **Aproximado-2** | 0.00020 | 1.53 | 191.5× | 309 | 307 |
+| **Aproximado-3** | 0.00022 | 1.04 | 175.0× | 309 | 429 |
+
+### 3.2 Análisis de Tiempo de Ejecución y Speedup
+
+![Tiempos de Ejecución](figures/benchmark/exec_time_barplot.png)
+
+![Distribución de Tiempos](figures/benchmark/exec_time_boxplot.png)
+
+![Speedup](figures/benchmark/speedup_barplot.png)
+
+### 3.3 Análisis de Costo Computacional: CWU y Frontera de Pareto
+
+![Operaciones CWU](figures/benchmark/nfev_barplot.png)
+
+![Frontera de Pareto](figures/benchmark/accuracy_vs_speed.png)
+
+### 3.4 Comparación Dedicada de Solvers $T_s$ Nativos de Julia (`Evaporacion.Droplet`)
+
+Evaluación directa sobre el modelo **Riguroso** completo (sin simplificar la física) comparando las 8 estrategias de resolución de $T_s$ respecto a `:brent`:
+
+| Estrategia de Solver Ts | Tiempo [s] | Speedup vs Brent | MAPE vs Brent [%] | Max Error [%] | nfev med. | Iter. Raíz med. |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **Brent (Ref. 1973)** (`:brent`) | 0.03702 ± 0.00100 | 1.00× | 0.0000 | 0.0000 | 7468 | 29390 |
+| **Newton-Raphson (Warm)** (`:newton`) | 0.02987 ± 0.00098 | 1.38× | 0.0000 | 0.0005 | 7408 | 15572 |
+| **Halley 3er Orden** (`:halley`) | 0.02836 ± 0.00111 | 1.44× | 0.0000 | 0.0006 | 7408 | 15059 |
+| **Biot Analítico (0-iter)** (`:analytical_biot`) | 0.02317 ± 0.00080 | 1.61× | 0.0000 | 0.0004 | 7408 | 0 |
+| **Halley Analítico (0-iter)** (`:analytical_halley`) | 0.02347 ± 0.00083 | 1.60× | 0.0000 | 0.0004 | 7408 | 0 |
+| **Chebyshev 2D Surrogate** (`:chebyshev`) | 0.01061 ± 0.00177 | 3.54× | 0.0001 | 0.0008 | 7408 | 0 |
+| **Bicubic Hermite LUT** (`:lut`) | 0.00931 ± 0.00046 | 3.92× | 0.0000 | 0.0004 | 7408 | 0 |
+| **Index-1 DAE (Rodas5P)** (`:dae`) | 0.00525 ± 0.00022 | 8.33× | 0.0037 | 0.0484 | 4064 | 0 |
+
+![Comparación Solvers Ts](figures/benchmark/ts_solvers_comparison.png)
+
+### 3.5 Análisis de Sesgo: Benchmark (25 casos) y Suite Global V2 (2,520 casos/modelo)
+
+![ECDF Benchmark](figures/benchmark/error_ecdf.png)
+
+![ECDF Error Global](figures/benchmark/error_ecdf_global.png)
+
+### 3.6 Análisis de Peores Casos (`nfev` máximo en Benchmark)
+
+| Modelo | nfev máx | Caso Crítico | Características del Caso |
+| :--- | ---: | :--- | :--- |
+| **Riguroso** | 10360 | Caso 23 | d0=2.00 mm, U=0.5 m/s, T0=10°C, T∞=20°C, HR=30% |
+| **Cúbico** | 10462 | Caso 23 | d0=2.00 mm, U=0.5 m/s, T0=10°C, T∞=20°C, HR=30% |
+| **No-Stefan** | 10270 | Caso 23 | d0=2.00 mm, U=0.5 m/s, T0=10°C, T∞=20°C, HR=30% |
+| **Difusión-Pura** | 2476 | Caso 4 | d0=2.80 mm, U=3.0 m/s, T0=35°C, T∞=50°C, HR=30% |
+| **Perfil-Uniforme** | 10558 | Caso 23 | d0=2.00 mm, U=0.5 m/s, T0=10°C, T∞=20°C, HR=30% |
+| **Equilibrio-Térmico** | 677 | Caso 4 | d0=2.80 mm, U=3.0 m/s, T0=35°C, T∞=50°C, HR=30% |
+| **Aproximado-1** | 423 | Caso 4 | d0=2.80 mm, U=3.0 m/s, T0=35°C, T∞=50°C, HR=30% |
+| **Modelo-6b** | 615 | Caso 21 | d0=1.50 mm, U=2.0 m/s, T0=15°C, T∞=30°C, HR=70% |
+| **Aproximado-2** | 507 | Caso 6 | d0=2.80 mm, U=1.0 m/s, T0=22°C, T∞=35°C, HR=50% |
+| **Aproximado-3** | 429 | Caso 4 | d0=2.80 mm, U=3.0 m/s, T0=35°C, T∞=50°C, HR=30% |
+
+### 3.7 Análisis de Calidad en el Conjunto Completo (Suite V2 — 2,520 Casos por Modelo)
+
+| Modelo | MAPE [%] | Error Máx [%] | P95 [%] | P99 [%] | Sesgo (Bias) [%] | Casos |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **Cúbico** (`cubic`) | 0.00 | 0.01 | 0.00 | 0.01 | -0.00 | 2520 |
+| **Perfil-Uniforme** (`uniform`) | 0.00 | 0.03 | 0.01 | 0.02 | -0.00 | 2520 |
+| **No-Stefan** (`level_2`) | 0.26 | 0.80 | 0.60 | 0.74 | +0.00 | 2520 |
+| **Aproximado-3** (`modelo_7`) | 0.91 | 4.09 | 2.29 | 3.84 | +0.07 | 2520 |
+| **Aproximado-2** (`modelo_6b_refit`) | 1.35 | 4.11 | 3.13 | 3.69 | +0.05 | 2520 |
+| **Aproximado-1** (`modelo_2b`) | 6.24 | 24.40 | 17.25 | 21.48 | -6.14 | 2520 |
+| **Equilibrio-Térmico** (`iso_twb`) | 12.22 | 43.53 | 29.71 | 37.67 | +7.17 | 2519 |
+| **Modelo-6b** (`modelo_6b`) | 55.90 | 175.40 | 137.64 | 161.74 | +53.16 | 2520 |
+| **Difusión-Pura** (`level_1`) | 123.21 | 408.14 | 315.13 | 380.58 | +123.18 | 2520 |
+
+### 3.8 Análisis Detallado de Casos Críticos (Top 10 Errores por Modelo)
+
+#### No-Stefan (`level_2`)
+
+| d0 [µm] | U [m/s] | T0 [°C] | T_inf [°C] | HR [-] | Error [%] |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 2800 | 3.0 | 35 | 50 | 0.3 | -0.80 |
+| 2800 | 3.0 | 22 | 50 | 0.3 | -0.80 |
+| 2800 | 3.0 | 15 | 50 | 0.3 | -0.79 |
+| 2800 | 3.0 | 10 | 50 | 0.3 | -0.79 |
+| 2000 | 3.0 | 35 | 50 | 0.3 | -0.79 |
+| 2800 | 2.0 | 35 | 50 | 0.3 | -0.78 |
+| 2000 | 3.0 | 22 | 50 | 0.3 | -0.78 |
+| 2800 | 2.0 | 22 | 50 | 0.3 | -0.78 |
+| 2000 | 3.0 | 15 | 50 | 0.3 | -0.78 |
+| 2800 | 2.0 | 15 | 50 | 0.3 | -0.77 |
+
+#### Perfil-Uniforme (`uniform`)
+
+| d0 [µm] | U [m/s] | T0 [°C] | T_inf [°C] | HR [-] | Error [%] |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 2800 | 3.0 | 10 | 50 | 0.7 | -0.03 |
+| 2000 | 3.0 | 10 | 50 | 0.7 | -0.02 |
+| 2800 | 2.0 | 10 | 50 | 0.7 | -0.02 |
+| 1500 | 3.0 | 10 | 50 | 0.7 | -0.02 |
+| 2000 | 2.0 | 10 | 50 | 0.7 | -0.02 |
+| 2800 | 3.0 | 15 | 50 | 0.7 | -0.02 |
+| 2800 | 3.0 | 10 | 45 | 0.7 | -0.02 |
+| 100 | 0.5 | 10 | 50 | 0.7 | -0.02 |
+| 2800 | 3.0 | 10 | 50 | 0.5 | -0.02 |
+| 100 | 1.0 | 10 | 50 | 0.7 | -0.02 |
+
+#### Equilibrio-Térmico (`iso_twb`)
+
+| d0 [µm] | U [m/s] | T0 [°C] | T_inf [°C] | HR [-] | Error [%] |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 2000 | 0.0 | 10 | 15 | 0.7 | +43.53 |
+| 1500 | 0.0 | 10 | 15 | 0.7 | +43.53 |
+| 1000 | 0.0 | 10 | 15 | 0.7 | +43.53 |
+| 500 | 0.0 | 10 | 15 | 0.7 | +43.53 |
+| 200 | 0.0 | 10 | 15 | 0.7 | +43.52 |
+| 100 | 0.0 | 10 | 15 | 0.7 | +43.51 |
+| 100 | 0.5 | 10 | 15 | 0.7 | +41.07 |
+| 200 | 0.5 | 10 | 15 | 0.7 | +40.38 |
+| 100 | 1.0 | 10 | 15 | 0.7 | +40.38 |
+| 200 | 1.0 | 10 | 15 | 0.7 | +39.61 |
+
+#### Aproximado-1 (`modelo_2b`)
+
+| d0 [µm] | U [m/s] | T0 [°C] | T_inf [°C] | HR [-] | Error [%] |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 | 0.0 | 10 | 15 | 0.7 | -24.40 |
+| 200 | 0.0 | 10 | 15 | 0.7 | -24.39 |
+| 500 | 0.0 | 10 | 15 | 0.7 | -24.38 |
+| 1000 | 0.0 | 10 | 15 | 0.7 | -24.38 |
+| 1500 | 0.0 | 10 | 15 | 0.7 | -24.38 |
+| 2000 | 0.0 | 10 | 15 | 0.7 | -24.38 |
+| 2800 | 0.0 | 10 | 15 | 0.7 | -24.38 |
+| 100 | 0.5 | 10 | 15 | 0.7 | -23.11 |
+| 200 | 0.5 | 10 | 15 | 0.7 | -22.75 |
+| 100 | 1.0 | 10 | 15 | 0.7 | -22.75 |
+
+#### Aproximado-2 (`modelo_6b_refit`)
+
+| d0 [µm] | U [m/s] | T0 [°C] | T_inf [°C] | HR [-] | Error [%] |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 | 0.0 | 10 | 50 | 0.3 | -4.11 |
+| 200 | 0.0 | 10 | 50 | 0.3 | -4.09 |
+| 500 | 0.0 | 10 | 50 | 0.3 | -4.08 |
+| 1000 | 0.0 | 10 | 50 | 0.3 | -4.08 |
+| 1500 | 0.0 | 10 | 50 | 0.3 | -4.08 |
+| 2000 | 0.0 | 10 | 50 | 0.3 | -4.08 |
+| 2800 | 0.0 | 10 | 50 | 0.3 | -4.08 |
+| 100 | 0.5 | 10 | 50 | 0.3 | -4.00 |
+| 100 | 1.0 | 10 | 50 | 0.3 | -3.88 |
+| 200 | 0.5 | 10 | 50 | 0.3 | -3.87 |
+
+#### Aproximado-3 (`modelo_7`)
+
+| d0 [µm] | U [m/s] | T0 [°C] | T_inf [°C] | HR [-] | Error [%] |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 2800 | 0.5 | 10 | 15 | 0.7 | -4.09 |
+| 1000 | 1.0 | 10 | 15 | 0.7 | -4.09 |
+| 2000 | 0.5 | 10 | 15 | 0.7 | -4.09 |
+| 500 | 3.0 | 10 | 15 | 0.7 | -4.09 |
+| 1500 | 1.0 | 10 | 15 | 0.7 | -4.09 |
+| 500 | 2.0 | 10 | 15 | 0.7 | -4.08 |
+| 1500 | 0.5 | 10 | 15 | 0.7 | -4.08 |
+| 200 | 3.0 | 10 | 15 | 0.7 | -4.07 |
+| 500 | 1.0 | 10 | 15 | 0.7 | -4.05 |
+| 1000 | 0.5 | 10 | 15 | 0.7 | -4.05 |
+---
+
+## 4. Arquitecturas Neuronales Informadas por Física (PINNs y PI-DeepONet)
+
+Evaluación comparativa de cuatro arquitecturas neuronales nativas en Julia (`Evaporacion.Neural.PINNSurrogates`, ver detalles completos en [analysis_report.md](analysis_report.md)):
+
+### 4.1 Desempeño Global, Velocidad y Extrapolación Fuera de Distribución (V1)
+
+| Modelo | Tiempo [s] | Speedup | nfev | V2 MAPE | V2 Máx | ṁ₀ MAPE | V1 OOD MAPE |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **Aproximado-3** (`modelo_7`) | 0.00023 | 169.2× | 309 | 0.91% | 4.09% | 303.89% | 5.91% |
+| **PINN-1Eq** (`pinn_c`) | 0.00058 | 67.5× | 303 | 0.31% | 2.84% | 303.78% | 4.09% |
+| **PINN-2Eq** (`pinn_2eq`) | 0.00632 | 5.9× | 1792 | 0.59% | 1.41% | 7.85% | 0.89% |
+| **PI-DeepONet** (`pi_deeponet`) | 0.00001 | 2566.7× | 1 | 0.92% | 4.21% | 8.05% | 6.08% |
+| **ResMLP-Puro** (`resmlp`) | 0.00001 | 3985.3× | 1 | 9.59% | 33.49% | 25425.80% | 18.33% |
+
+
+### 4.2 Fidelidad de Trayectorias Acopladas (100 Casos V2)
+
+| Modelo 2-EDO | MAE d(t) [mm] | MAE T̄(t) [°C] | MAE Ts(t) [°C] |
+| :--- | ---: | ---: | ---: |
+| **PINN-2Eq** (`pinn_2eq`) | 0.0068 | 0.024 | 0.033 |
+| **PI-DeepONet** (`pi_deeponet`) | 0.0236 | 2.338 | 2.155 |
+
+![Frontera de Pareto PINN](figures/pinn/pinn_pareto_front.png)
+
+![Trayectorias 2-EDO PINN](figures/pinn/pinn_trajectories_2eq.png)
+

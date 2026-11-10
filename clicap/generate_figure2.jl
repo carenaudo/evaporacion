@@ -151,74 +151,90 @@ CSV.write(fig2_csv, df_fig2)
 println("Saved CSV: $fig2_csv")
 
 # ------------------------------------------------------------------------------
-# PLOT 4-PANEL FIGURE MATCHING EXACT MANUSCRIPT STYLE
+# PLOT 2x2 FIGURE MATCHING EXACT REFERENCE STYLE (BIGGER FONTS, 2x2, :bottomleft)
 # ------------------------------------------------------------------------------
-default(fontfamily="Helvetica", framestyle=:box, grid=true, gridcolor=:gray90, gridlinewidth=0.8, dpi=300)
+default(
+    fontfamily = "Helvetica",
+    framestyle = :box,
+    grid = true,
+    gridcolor = :gray80,
+    gridalpha = 0.5,
+    gridlinewidth = 0.8,
+    titlefontsize = 16,
+    guidefontsize = 13,
+    tickfontsize = 11,
+    legendfontsize = 9,
+    dpi = 300
+)
 
-# Panel 1: Modo Radio de contacto constante
+# Panel 1 (Top-Left): Modo Radio de contacto constante
 p1 = plot(
     title = "Modo Radio de contacto constante",
-    titlefontsize = 11,
-    xlabel = "Tiempo normalizado (t / t_CR)",
-    ylabel = "R/R_0,  θ/θ_0",
-    xlim = (0.0, 1.0),
-    ylim = (-0.02, 1.05),
-    legend = :topright,
-    legendfontsize = 8,
-    size = (400, 240)
+    xlabel = "Tiempo normalizado (t / t_CR,scale)",
+    ylabel = "R normalizado, θ",
+    xlim = (-0.04, 1.02),
+    ylim = (-0.05, 1.08),
+    xticks = 0.0:0.2:1.0,
+    yticks = [0.0, 0.5, 1.0],
+    legend = :bottomleft
 )
-plot!(p1, tau_w_cr, th_w_cr, label="Tabla 2 Wilson", color=:black, lw=1.8, ls=:dot)
-plot!(p1, tau_cr, R_norm_cr, label="R(t)/R_0 (Num)", color=:black, lw=2.2, ls=:solid)
-plot!(p1, tau_cr, th_norm_cr, label="θ(t)/θ_0 (Num)", color=:black, lw=2.2, ls=:dashdot)
+plot!(p1, tau_w_cr, th_w_cr, label="Tabla 2 Wilson", color=:black, lw=2.0, ls=:dot)
+plot!(p1, tau_cr, R_norm_cr, label="R(t)/R_0 (Num)", color=:black, lw=2.6, ls=:solid)
+plot!(p1, tau_cr, th_norm_cr, label="θ(t)/θ_0 (Num)", color=:black, lw=2.6, ls=:dashdot)
 
-# Panel 2: Modo Ángulo de Contacto constante
+# Panel 2 (Bottom-Left): Modo Ángulo de Contacto constante
 p2 = plot(
     title = "Modo Ángulo de Contacto constante",
-    titlefontsize = 11,
-    xlabel = "Tiempo normalizado (t / t_CR)",
-    ylabel = "R/R_0,  θ/θ_0",
-    xlim = (0.0, 1.50),
-    ylim = (-0.02, 1.05),
-    legend = :topright,
-    legendfontsize = 8,
-    size = (400, 240)
+    xlabel = "Tiempo normalizado (t / t_CR,scale)",
+    ylabel = "R normalizado, θ",
+    xlim = (-0.05, 1.52),
+    ylim = (-0.05, 1.08),
+    xticks = 0.0:0.25:1.50,
+    yticks = [0.0, 0.5, 1.0],
+    legend = :bottomleft
 )
-plot!(p2, tau_w_ca, R_w_ca, label="Tabla 2 Wilson", color=:black, lw=1.8, ls=:dot)
-plot!(p2, tau_ca, R_norm_ca, label="R(t)/R_0 (Num)", color=:black, lw=2.2, ls=:solid)
-plot!(p2, tau_ca, th_norm_ca, label="θ(t)/θ_0 (Num)", color=:black, lw=2.2, ls=:dashdot)
+plot!(p2, tau_w_ca, R_w_ca, label="Tabla 2 Wilson", color=:black, lw=2.0, ls=:dot)
+plot!(p2, tau_ca, R_norm_ca, label="R(t)/R_0 (Num)", color=:black, lw=2.6, ls=:solid)
+plot!(p2, tau_ca, th_norm_ca, label="θ(t)/θ_0 (Num)", color=:black, lw=2.6, ls=:dashdot)
 
-# Panel 3: Modo Stick-Slide
+# Panel 3 (Top-Right): Modo Stick-Slide
 p3 = plot(
     title = "Modo Stick-Slide",
-    titlefontsize = 11,
-    xlabel = "Tiempo normalizado (t / t_CR)",
-    ylabel = "R/R_0,  θ/θ_0",
-    xlim = (0.0, 1.25),
-    ylim = (-0.02, 1.05),
-    legend = :topright,
-    legendfontsize = 8,
-    size = (400, 240)
+    xlabel = "Tiempo normalizado (t / t_CR,scale)",
+    ylabel = "R normalizado, θ",
+    xlim = (-0.04, 1.26),
+    ylim = (-0.05, 1.08),
+    xticks = 0.0:0.2:1.2,
+    yticks = [0.0, 0.5, 1.0],
+    legend = :bottomleft
 )
-plot!(p3, tau_ss, R_norm_ss, label="R(t)/R_0 (Num)", color=:black, lw=2.2, ls=:solid)
-plot!(p3, tau_ss, th_norm_ss, label="θ(t)/θ_0 (Num)", color=:black, lw=2.2, ls=:dashdot)
+plot!(p3, tau_ss, R_norm_ss, label="R(t)/R_0 (Num)", color=:black, lw=2.6, ls=:solid)
+plot!(p3, tau_ss, th_norm_ss, label="θ(t)/θ_0 (Num)", color=:black, lw=2.6, ls=:dashdot)
 
-# Panel 4: Modo Stick-Jump
+# Panel 4 (Bottom-Right): Modo Stick-Jump
 p4 = plot(
     title = "Modo Stick-Jump",
-    titlefontsize = 11,
-    xlabel = "Tiempo normalizado (t / t_CR)",
-    ylabel = "R/R_0,  θ/θ_0",
-    xlim = (0.0, 1.35),
-    ylim = (-0.02, 1.05),
-    legend = :topright,
-    legendfontsize = 8,
-    size = (400, 240)
+    xlabel = "Tiempo normalizado (t / t_CR,scale)",
+    ylabel = "R normalizado, θ",
+    xlim = (-0.05, 1.38),
+    ylim = (-0.05, 1.08),
+    xticks = 0.0:0.25:1.25,
+    yticks = [0.0, 0.5, 1.0],
+    legend = :bottomleft
 )
-plot!(p4, tau_sj, R_norm_sj, label="R(t)/R_0 (Num)", color=:black, lw=2.0, ls=:solid)
-plot!(p4, tau_sj, th_norm_sj, label="θ(t)/θ_0 (Num)", color=:black, lw=2.0, ls=:dashdot)
+plot!(p4, tau_sj, R_norm_sj, label="R(t)/R_0 (Num)", color=:black, lw=2.4, ls=:solid)
+plot!(p4, tau_sj, th_norm_sj, label="θ(t)/θ_0 (Num)", color=:black, lw=2.4, ls=:dashdot)
 
-# Combine in vertical layout (4 rows, 1 column)
-fig2 = plot(p1, p2, p3, p4, layout=(4, 1), size=(420, 950), left_margin=5Plots.mm, bottom_margin=4Plots.mm)
+# Combine in 2x2 grid: [CR, Stick-Slide; CA, Stick-Jump]
+fig2 = plot(
+    p1, p3, p2, p4,
+    layout = (2, 2),
+    size = (1160, 620),
+    left_margin = 5Plots.mm,
+    right_margin = 3Plots.mm,
+    top_margin = 5Plots.mm,
+    bottom_margin = 5Plots.mm
+)
 
 fig2_png = joinpath(ARTIFACT_DIR, "figure2_sessile_modes_wilson.png")
 savefig(fig2, fig2_png)

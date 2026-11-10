@@ -213,12 +213,19 @@ println("   Saved Figure 3 CSV: $fig3_csv")
 
 # Plot Figure 3 as a grouped bar chart
 p_fig3 = plot(
-    title = "Figura 3: Coeficiente de evaporacion a t=0 (d0 = 200 µm, T = 298 K)",
+    title = "Figura 3: Coeficiente de evaporación a t=0 (d0 = 200 µm, T = 298 K)",
     xlabel = "Humedad Relativa (HR)",
     ylabel = "K(t=0) [mm²/s]",
     framestyle = :box,
     grid = true,
-    fontfamily = "Helvetica",
+    fontfamily = "Times",
+    titlefontsize = 14,
+    guidefontsize = 14,
+    tickfontsize = 12,
+    legendfontsize = 11,
+    left_margin = 5Plots.mm,
+    bottom_margin = 4Plots.mm,
+    ylim = (0.0, maximum(df_fig3.K_t0_mm2_s) * 1.12),
     dpi = 300,
     size = (750, 500)
 )
@@ -237,7 +244,7 @@ for (m_idx, m_char) in enumerate(['a', 'b', 'c', 'd'])
         x_pos .+ offsets[m_idx],
         y_vals,
         bar_width = bar_width,
-        label = ["a (D² Clasica)", "b (D² Stefan)", "c (D² Conveccion)", "d (Abramzon-Sirignano)"][m_idx],
+        label = ["a (D² Clásica)", "b (D² Stefan)", "c (D² Convección)", "d (Abramzon-Sirignano)"][m_idx],
         color = colors[m_idx],
         alpha = 0.85
     )
@@ -364,39 +371,44 @@ fig4_csv = joinpath(ARTIFACT_DIR, "figure4_sessile_lifetimes.csv")
 CSV.write(fig4_csv, df_fig4)
 println("   Saved Figure 4 CSV: $fig4_csv")
 
-# Plot Figure 4: Lifetime vs HR for each mode (at theta0 = 40°)
+# Plot Figure 4: Lifetime vs HR for each mode (at theta0 = 40°) as a grouped bar chart
+sub_theta40 = filter(r -> r.theta0_deg == 40.0, df_fig4)
 p_fig4 = plot(
-    title = "Figura 4: Tiempo de vida sésil vs. Humedad Relativa (d0* = 200 µm, θ₀ = 40°, T = 298 K)",
-    xlabel = "Humedad Relativa [%]",
+    title = "Figura 4: Tiempo de vida sésil (d0* = 200 µm, θ0 = 40°, T = 298 K)",
+    xlabel = "Humedad Relativa (HR)",
     ylabel = "Tiempo de vida [s]",
     framestyle = :box,
     grid = true,
-    fontfamily = "Helvetica",
+    fontfamily = "Times",
+    titlefontsize = 14,
+    guidefontsize = 14,
+    tickfontsize = 12,
+    legendfontsize = 11,
+    left_margin = 5Plots.mm,
+    bottom_margin = 4Plots.mm,
+    ylim = (0.0, maximum(sub_theta40.t_evap_s) * 1.12),
     dpi = 300,
     size = (750, 500),
     legend = :topleft
 )
 
-hrs = [20.0, 50.0, 80.0]
 modes_list = ["AC", "RC", "S-S", "S-J"]
 mode_colors = Dict("AC" => :forestgreen, "RC" => :navy, "S-S" => :purple, "S-J" => :darkorange)
-mode_styles = Dict("AC" => :solid, "RC" => :dash, "S-S" => :dashdot, "S-J" => :dot)
 
-for m in modes_list
-    sub = filter(r -> r.Modo == m && r.theta0_deg == 40.0, df_fig4)
-    plot!(
+for (m_idx, m) in enumerate(modes_list)
+    sub = sort(filter(r -> r.Modo == m, sub_theta40), :HR_pct)
+    bar!(
         p_fig4,
-        sub.HR_pct,
+        x_pos .+ offsets[m_idx],
         sub.t_evap_s,
-        label = "Modo $m (θ₀ = 40°)",
-        marker = :circle,
-        markersize = 6,
-        lw = 2.5,
+        bar_width = bar_width,
+        label = "Modo $m (θ0 = 40°)",
         color = mode_colors[m],
-        ls = mode_styles[m]
+        alpha = 0.85
     )
 end
 
+xticks!(p_fig4, x_pos, categories)
 fig4_png = joinpath(ARTIFACT_DIR, "figure4_sessile_lifetimes.png")
 savefig(p_fig4, fig4_png)
 println("   Saved Figure 4 PNG: $fig4_png")

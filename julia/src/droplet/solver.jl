@@ -98,12 +98,8 @@ function droplet_dae_rhs!(du, u, p::DropletParams, t)
     end
 
     # 3. Algebraic surface energy balance residual (intensive form normalized by 4π*r_s)
-    # R_tilde(Ts) = 0
-    # Note: alg.q_g / (4π*r_s) = 0.5 * alg.Nu_star * alg.k_g * log1p_over_x(alg.B_T) * (p.T_inf - Ts)
-    term_qg = 0.5 * alg.Nu_star * alg.k_g * log1p_over_x(alg.B_T) * (p.T_inf - Ts)
-    term_evap = 0.5 * alg.rho_g * alg.D_ab * alg.Sh_star * log1p(alg.B_M) * alg.DHev
-    term_ql = alg.b_q * alg.k_l * (Ts - T_bar)
-    du[3] = term_qg - term_evap - term_ql
+    # R_tilde(Ts) = [q_g - m_dot * DHev - q_l] / (4π * r_s) = 0
+    du[3] = (alg.q_g - alg.m_dot * alg.DHev - alg.q_l) / (4.0 * π * alg.r_s)
 
     return nothing
 end
@@ -144,9 +140,10 @@ function solve_droplet(
         dae_func = ODEFunction(droplet_dae_rhs!; mass_matrix=M)
         prob = ODEProblem(dae_func, u0_dae, float.(tspan), params)
 
-        # Default stiff DAE solver if not specified (autodiff=false avoids Dual instabilities)
+        # Default stiff DAE solver if not specified (autodiff=false avoids Dual instabilities).
+        # Use a scalar abstol so NonlinearSolveBase DAE initialization does not error on vector tolerances.
         dae_solver = solver === nothing ? Rodas5P(autodiff=false) : solver
-        dae_atol = atol isa Real ? [atol * 1e-6, atol, atol * 1e2] : atol
+        dae_atol = atol isa Real ? min(Float64(atol) * 1e-4, 1e-13) : atol
         return solve(prob, dae_solver; callback=cb, reltol=rtol, abstol=dae_atol, kwargs...)
     else
         # Standard 2-variable ODE [m, T_bar]

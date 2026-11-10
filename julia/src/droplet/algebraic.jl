@@ -6,6 +6,106 @@ Generic over `T <: Real` to support automatic differentiation.
 """
 
 """
+    _compute_gas_transport_and_fluxes(...)
+
+Shared helper computing blowing-corrected transport numbers and gas-phase fluxes
+consistently for both `calc_droplet_algebraic` and `intensive_surface_residual`.
+"""
+function _compute_gas_transport_and_fluxes(
+    params::DropletParams,
+    Re::T, Pr::T, Sc::T,
+    Nu0_in::T, Sh0_in::T,
+    rg::T, kg::T, Dab::T, cpv::T, cpg::T,
+    rl::T, r_s::T,
+    Y_s::T, Y_inf_c::T, bm_clamped::T,
+    DHev::T, Ts::T
+) where {T<:Real}
+    Nu0 = Nu0_in
+    Sh0 = Sh0_in
+    ln_BM = log1p(bm_clamped)
+    spheroid_ratio = params.spheroid_epsilon > 0.0 ? T(spheroid_deformation_evaporation_ratio(params.spheroid_epsilon)) : one(T)
+
+    is_level1 = params.model_variant === :level_1
+    is_level2 = params.model_variant === :level_2 || (!params.as1989_blowing && params.model_variant === :abramzon_sirignano)
+
+    if is_level1 || is_level2
+        Sh_star = is_level1 ? T(2.0) : Sh0
+        Nu_star = is_level1 ? T(2.0) : Nu0
+        B_T     = bm_clamped
+        F_M     = one(T)
+        F_T     = one(T)
+        phi     = one(T)
+        Sh      = Sh_star
+        Nu      = Nu_star
+
+        dY = Y_s - Y_inf_c
+        flux_mass_intens = T(0.5) * rg * Dab * Sh_star * dY * spheroid_ratio
+        m_dot_raw = T(4.0 * π) * r_s * flux_mass_intens
+        h         = Nu_star * kg / (T(2.0) * r_s)
+        Le        = one(T)
+        r_dot_s   = -(rg * Dab * Sh_star) / (T(2.0) * rl * r_s) * dY
+        term_qg   = T(0.5) * Nu_star * kg * (T(params.T_inf) - Ts)
+        term_evap = flux_mass_intens * DHev
+
+        return (Nu0=Nu0, Sh0=Sh0, B_T=B_T, F_M=F_M, F_T=F_T, phi=phi,
+                Sh_star=Sh_star, Sh=Sh, Nu_star=Nu_star, Nu=Nu,
+                m_dot_raw=m_dot_raw, h=h, Le=Le, r_dot_s=r_dot_s,
+                term_qg=term_qg, term_evap=term_evap)
+    end
+
+    local Nu_star, Sh_star, B_T, F_M, F_T, phi
+    if params.as1989_blowing
+        as_sol = solve_as1989_transfer(Re, Pr, Sc, bm_clamped, cpv, cpg, Dab * rg * cpg / kg)
+        Nu0     = as_sol.Nu0
+        Sh0     = as_sol.Sh0
+        Nu_star = as_sol.Nu_star
+        Sh_star = as_sol.Sh_star
+        B_T     = as_sol.B_T
+        F_M     = as_sol.F_M
+        F_T     = as_sol.F_T
+        phi     = as_sol.phi
+    else
+        Nu_star = Nu0
+        Sh_star = Sh0
+        B_T     = bm_clamped
+        F_M     = one(T)
+        F_T     = one(T)
+        phi     = one(T)
+    end
+
+    Sh = Sh_star * log1p_over_x(bm_clamped)
+    Nu = Nu_star * log1p_over_x(B_T)
+
+    flux_mass_intens = if params.model_variant === :d2_classic
+        rg * Dab * (Y_s - Y_inf_c)
+    elseif params.model_variant === :d2_stefan
+        rg * Dab * ln_BM
+    elseif params.model_variant === :d2_convective
+        Sh_conv = nusselt_froessling(Re, Sc; coef=0.553)
+        T(0.5) * rg * Dab * Sh_conv * (Y_s - Y_inf_c)
+    elseif params.model_variant === :d2_revised_dallabarba
+        T(0.5) * rg * Dab * Sh0 * ln_BM
+    else
+        T(0.5) * rg * Dab * Sh_star * ln_BM
+    end
+    flux_mass_intens *= spheroid_ratio
+    m_dot_raw = T(4.0 * π) * r_s * flux_mass_intens
+
+    ln_BT = log1p(B_T)
+    h = Nu_star * kg / (T(2.0) * r_s) * log1p_over_x(B_T)
+    Le = abs(ln_BT) > T(1e-10) ? (ln_BM / ln_BT) : one(T)
+    r_dot_s = -(rg * Dab * Sh_star) / (T(2.0) * rl * r_s) * ln_BM
+
+    term_qg   = T(0.5) * Nu_star * kg * log1p_over_x(B_T) * (T(params.T_inf) - Ts)
+    term_evap = flux_mass_intens * DHev
+
+    return (Nu0=Nu0, Sh0=Sh0, B_T=B_T, F_M=F_M, F_T=F_T, phi=phi,
+            Sh_star=Sh_star, Sh=Sh, Nu_star=Nu_star, Nu=Nu,
+            m_dot_raw=m_dot_raw, h=h, Le=Le, r_dot_s=r_dot_s,
+            term_qg=term_qg, term_evap=term_evap)
+end
+
+"""
     calc_droplet_algebraic(liq::DropletLiquidState, Ts::Real, params::DropletParams) -> DropletAlgebraic
     calc_droplet_algebraic(m::Real, T_bar::Real, Ts::Real, params::DropletParams) -> DropletAlgebraic
 
@@ -81,52 +181,21 @@ function calc_droplet_algebraic(
     B_M = (Y_s - Y_inf_c) / max(one(T) - Y_s, T(1e-12))
     bm_clamped = max(B_M, T(-0.99999))
 
-    # A&S (1989) blowing coupling
-    local Nu_star, Sh_star, B_T, F_M, F_T, phi
-    if params.as1989_blowing
-        as_sol = solve_as1989_transfer(Re, Pr, Sc, bm_clamped, cpv, cpg, Dab * rg * cpg / kg)
-        Nu0     = as_sol.Nu0
-        Sh0     = as_sol.Sh0
-        Nu_star = as_sol.Nu_star
-        Sh_star = as_sol.Sh_star
-        B_T     = as_sol.B_T
-        F_M     = as_sol.F_M
-        F_T     = as_sol.F_T
-        phi     = as_sol.phi
-    else
-        Nu_star = Nu0
-        Sh_star = Sh0
-        B_T     = bm_clamped
-        F_M     = one(T)
-        F_T     = one(T)
-        phi     = one(T)
-    end
-
-    # Effective Sherwood & Nusselt numbers
-    Sh = Sh_star * log1p_over_x(bm_clamped)
-    Nu = Nu_star * log1p_over_x(B_T)
-
-    # Mass evaporation rate [kg/s] based on model_variant
-    ln_BM = log1p(bm_clamped)
-    if params.model_variant === :d2_classic
-        m_dot_raw = T(4.0 * π) * r_s * rg * Dab * (Y_s - Y_inf_c)
-    elseif params.model_variant === :d2_stefan
-        m_dot_raw = T(4.0 * π) * r_s * rg * Dab * ln_BM
-    elseif params.model_variant === :d2_convective
-        Sh_conv = nusselt_froessling(Re, Sc; coef=0.553)
-        m_dot_raw = T(2.0 * π) * r_s * rg * Dab * Sh_conv * (Y_s - Y_inf_c)
-    elseif params.model_variant === :d2_revised_dallabarba
-        # Dalla Barba et al. (2021) revised d2 law with standard Sh0 convective enhancement
-        m_dot_raw = T(2.0 * π) * r_s * rg * Dab * Sh0 * ln_BM
-    else
-        # Abramzon-Sirignano (1989)
-        m_dot_raw = T(2.0 * π) * r_s * rg * Dab * Sh_star * ln_BM
-    end
-
-    # Spheroidal deformation correction (Tonini & Cossali, 2015; Sazhin, 2021)
-    if params.spheroid_epsilon > 0.0
-        m_dot_raw *= T(spheroid_deformation_evaporation_ratio(params.spheroid_epsilon))
-    end
+    tr = _compute_gas_transport_and_fluxes(
+        params, Re, Pr, Sc, Nu0, Sh0,
+        rg, kg, Dab, cpv, cpg, rl, r_s,
+        Y_s, Y_inf_c, bm_clamped, DHev, T(Ts)
+    )
+    Nu0     = tr.Nu0
+    Sh0     = tr.Sh0
+    Nu_star = tr.Nu_star
+    Sh_star = tr.Sh_star
+    B_T     = tr.B_T
+    F_M     = tr.F_M
+    F_T     = tr.F_T
+    Sh      = tr.Sh
+    Nu      = tr.Nu
+    m_dot_raw = tr.m_dot_raw
 
     m_dot = abs(m_dot_raw) < T(1e-20) ? sign(m_dot_raw) * T(1e-20) : m_dot_raw
 
@@ -142,11 +211,9 @@ function calc_droplet_algebraic(
     U_s   = circ.U_s
 
     # Heat transfer rates [W]
-    ln_BT = log1p(B_T)
-    h = Nu_star * kg / (T(2.0) * r_s) * log1p_over_x(B_T)
-    Le = abs(ln_BT) > T(1e-10) ? (ln_BM / ln_BT) : one(T)
-
-    r_dot_s = -(rg * Dab * Sh_star) / (T(2.0) * rl * r_s) * ln_BM
+    h       = tr.h
+    Le      = tr.Le
+    r_dot_s = tr.r_dot_s
     # Heat conducted from surface into droplet interior [W] (Abramzon & Sirignano 1989 Eq. 24)
     q_l = b_q != zero(T) ? T(4.0 * π) * b_q * kl * (T(Ts) - T(liq.T_bar)) * r_s : zero(T)
     q_g = T(4.0 * π) * (r_s^2) * h * (T(params.T_inf) - T(Ts))
@@ -264,29 +331,13 @@ function intensive_surface_residual(Ts::Ts_t, liq::DropletLiquidState{T}, params
     B_M = (Y_s - Y_inf_c) / max(one(TR) - Y_s, TR(1e-12))
     bm_clamped = max(B_M, TR(-0.99999))
 
-    local Nu_star, Sh_star, B_T
-    if params.as1989_blowing
-        as_sol = solve_as1989_transfer(Re, Pr, Sc, bm_clamped, cpv, cpg, Dab * rg * cpg / kg)
-        Nu_star = as_sol.Nu_star
-        Sh_star = as_sol.Sh_star
-        B_T     = as_sol.B_T
-    else
-        Nu_star = Nu0
-        Sh_star = Sh0
-        B_T     = bm_clamped
-    end
-
-    ln_BM = log1p(bm_clamped)
-
-    # Intensive heat arriving from gas per (4π * r_s):
-    # q_g / (4π * r_s) = r_s * h * (T_inf - Ts) = 0.5 * Nu_star * kg * log1p_over_x(B_T) * (T_inf - Ts)
-    term_qg = TR(0.5) * Nu_star * kg * log1p_over_x(B_T) * (TR(params.T_inf) - TR(Ts))
-
-    # Intensive latent heat rate per (4π * r_s):
-    # (m_dot * DHev) / (4π * r_s) = 0.5 * rg * Dab * Sh_star * ln(1 + B_M) * DHev
-    # (adjust if spheroid_epsilon > 0.0)
-    spheroid_ratio = params.spheroid_epsilon > 0.0 ? TR(spheroid_deformation_evaporation_ratio(params.spheroid_epsilon)) : one(TR)
-    term_evap = TR(0.5) * rg * Dab * Sh_star * ln_BM * DHev * spheroid_ratio
+    tr = _compute_gas_transport_and_fluxes(
+        params, Re, Pr, Sc, Nu0, Sh0,
+        rg, kg, Dab, cpv, cpg, TR(liq.rho_l), TR(liq.r_s),
+        Y_s, Y_inf_c, bm_clamped, DHev, TR(Ts)
+    )
+    term_qg   = tr.term_qg
+    term_evap = tr.term_evap
 
     # Intensive conduction into droplet interior per (4π * r_s):
     # q_l / (4π * r_s) = b_q * k_l * (Ts - T_bar)
@@ -355,6 +406,9 @@ function solve_surface_temperature_brent(
     e = d
 
     for _ in 1:maxiter
+        if params.ts_counter !== nothing
+            params.ts_counter.iters += 1
+        end
         if abs(fc) < abs(fb)
             a, b, c = b, c, b
             fa, fb, fc = fb, fc, fb
@@ -435,6 +489,9 @@ function solve_surface_temperature_newton(liq::DropletLiquidState{T}, params::Dr
     eps_fd = T(1e-5)
 
     for _ in 1:maxiter
+        if params.ts_counter !== nothing
+            params.ts_counter.iters += 1
+        end
         R_val = intensive_surface_residual(Ts, liq, params)
         if abs(R_val) <= tol
             return Ts
@@ -472,6 +529,9 @@ function solve_surface_temperature_halley(liq::DropletLiquidState{T}, params::Dr
     eps_fd = T(1e-4)
 
     for _ in 1:maxiter
+        if params.ts_counter !== nothing
+            params.ts_counter.iters += 1
+        end
         R0 = intensive_surface_residual(Ts, liq, params)
         if abs(R0) <= tol
             return Ts
@@ -587,6 +647,10 @@ function solve_surface_temperature(
 )
     if params.profile === :uniforme
         return liq.T_bar
+    end
+
+    if params.ts_counter !== nothing
+        params.ts_counter.calls += 1
     end
 
     method = params.ts_solver

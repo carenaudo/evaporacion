@@ -89,7 +89,7 @@ const MODEL_LIST = [
     (key = "revised", id = :d2_revised_dallabarba, profile = :uniforme, desc = "revised (D² Dalla Barba c/ Twb ventilado)"),
     (key = "vlasov", id = :vlasov_kinetic, profile = :uniforme, desc = "vlasov (Vlasov 2021 Cinético-Difusivo)"),
     (key = "surr_6b", id = :surrogate_6b, profile = :uniforme, desc = "surr_6b (Surrogante 6b Refit)"),
-    (key = "surr_8dyn", id = :surrogate_8dyn, profile = :uniforme, desc = "surr_8dyn (Surrogante 8 Dinámico)")
+    (key = "surr_7", id = :surrogate_7, profile = :uniforme, desc = "surr_7 (Surrogante 7 Multi-Var)")
 ]
 
 all_csv = joinpath(DATA_DIR, "comparison_inflight_all_cases.csv")
@@ -169,8 +169,8 @@ println("\nSimulating in-flight droplets across 9 cases × 4 diameters × $(leng
                     t_evap = tau_diff * (1.0 + 2.0 * l_k / R0)
                     K_t0_mm2_s = (d_m * 1e3)^2 / t_evap
 
-                elseif m_id in (:surrogate_6b, :surrogate_8dyn)
-                    stype = m_id == :surrogate_6b ? :modelo_6b_refit : :modelo_8_dynamic
+                elseif m_id in (:surrogate_6b, :surrogate_7)
+                    stype = m_id == :surrogate_6b ? :modelo_6b_refit : :modelo_7
                     v_term_est = calc_terminal_velocity(d_m, T_K, P_ATM)
                     cfg = SurrogateConfig(
                         model_type = stype,

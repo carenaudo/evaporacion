@@ -1,44 +1,103 @@
-# Neural ODE Model Analysis Report
+# Physics-Informed Neural Networks (PINNs) & Operator Surrogates Report (Julia)
 
-## 1. Multi-Case Validation Summary
-The model was validated against the physical model across 19 distinct initial conditions (d0: 0.1–2.8 mm, U: 0–3 m/s, HR: 30–70%).
-
-| Metric | Mean Error | Max Error | Note |
-| :--- | :--- | :--- | :--- |
-| **Diameter (MAE)** | 0.0542 mm | 0.1520 mm | High precision (~2.5% relative error for large drops) |
-| **Temperature (MAE)** | 1.0069 °C | 7.2937 °C | Good tracking; highest error in impulsive small-drop cases |
-| **Evaporation Time** | 0% | 0% | Integration is stable over the full physical window |
-
-> [!NOTE]
-> The model captures the $d^2$ law dynamics and the thermal cooling/reheating cycle with remarkably few parameters (~36k).
-
-## 2. Overfitting Analysis
-Based on the training history (80 epochs):
-* **Train Loss Final**: ~0.1374
-* **Val Loss Final**: ~0.1387
-* **Gap**: < 1%
-
-**Conclusion**: **NO significant overfitting** is present. The validation loss tracks the training loss very closely. The current model is actually "under-capacity" or "under-trained" rather than overfitted. We can afford to increase network complexity or train for more epochs (e.g., 500+) without immediate risk of divergence.
-
-## 3. Proposed Architecture Changes
-While the current MLP-based Neural ODE is functional, the following changes are recommended to reach "production-grade" precision:
-
-### A. Physical Residual (Hybrid Model)
-Instead of learning the full $dm/dt$ and $dT/dt$, the network should learn the **residual** relative to a simple $d^2$ law base.
-* **Logic**: $f_{total} = f_{analytic}(d, T) + \text{NeuralNet}(d, T, \text{cond})$
-* **Benefit**: Guarantees basic physical behavior even in regions with sparse data.
-
-### B. Time-Aware Attention
-The current model uses a static condition vector. Adding an **Attention Mechanism** on the condition vector relative to the current state $t/t_{end}$ would help the model "focus" on different physical regimes (e.g., the initial heat-up vs. final dry-out).
-
-### C. Singularity-Aware Activation
-The evaporation rate often scales as $1/d$. The current MLP has to "work hard" to approximate this with standard Sigmoid/SiLU activations.
-* **Proposal**: Use a custom activation layer for the mass derivative that includes a $1/d$ term:
-  $$\frac{dm}{dt} = -\text{Softplus}(\text{MLP}) \cdot \left( \frac{1}{d + \epsilon} \right)$$
-
-### D. Multi-Head Condition Encoder
-Instead of a single bottleneck (32-dim), use separate encoders for **Geometry** (d0, t_end) and **Environment** (Tinf, HR, U). This prevents the "Geometry" signal from being washed out by "Environment" noise.
+*Generated from [train_jaiio_pinns.jl](file:///d:/programacion/evaporacion/JAIIO/train_jaiio_pinns.jl) and [evaluate_jaiio_pinns.jl](file:///d:/programacion/evaporacion/JAIIO/evaluate_jaiio_pinns.jl) (`Evaporacion.Neural.PINNSurrogates`) against the Rigorous Level 3 Julia baseline (`:brent`, Zhou et al., 2017 moving-boundary).*
 
 ---
-**Validation Table CSV**: [validation_table.csv](file:///D:/programacion/evaporacion/saved_models/validation_table.csv)
-**Full Trajectory Plots**: [validation_trajectories.png](file:///D:/programacion/evaporacion/saved_models/validation_trajectories.png)
+
+## 1. Diagnosis of Legacy Neural Approaches & Design Principles
+
+An audit of the legacy neural implementations (`option3a_neural_rhs.py`, `option3b_neural_ode.py`, `option3c_hybrid_attn.jl`) identified two structural flaws:
+1. **Target Leakage in Legacy `Option 3b`**: The network conditioned on `log_t_end` (the ground-truth `t_evap`), preventing autonomous evaporation-time prediction, while integrating $\ln(m) \to -\infty$ introduced dry-out stiffness.
+2. **Slow Runtime in `Option 3c`**: Evaluating the full iterative surface-temperature root-finder inside every neural ODE step made inference slower than the rigorous baseline.
+
+The new Julia neural module ([pinn_surrogates.jl](file:///d:/programacion/evaporacion/julia/src/neural/pinn_surrogates.jl)) enforces **strict zero-leakage autonomy** (inputs are strictly $(d_0, U_\infty, T_0, T_\infty, \text{HR})$) across four architectures:
+
+| Architecture | Internal ID | Formulation & Physics Constraints | Params | ODE Solver |
+| :--- | :--- | :--- | ---: | :--- |
+| **`PINN-1Eq`** | `pinn_c` | Smooth $C^\infty$ `modelo_7` prior $\times \exp(0.15\tanh(\mathcal{N}_\theta))$ with dimensionless $\text{Re}$ gates; trained via 8-pt Gauss-Legendre $t_{\text{evap}}$ integral + $\partial C/\partial U \ge 0$, $\partial C/\partial \text{HR} \le 0$ monotonicity penalties | ~865 | `Tsit5()` |
+| **`PINN-2Eq`** | `pinn_2eq` | Coupled $[V(t), \bar{T}(t)]$ conservation with 0-iter Neural Biot $\hat{T}_s$ closure, film Sherwood/Spalding blowing, and regularized thermal inertia; trained on 24-pt collocation trajectories + energy balance & lifetime integral | ~1,507 | `AutoTsit5(Rosenbrock23)` |
+| **`PI-DeepONet`** | `pi_deeponet` | Solver-free Branch-Trunk operator network (`nfev = 1`) with hard BCs ($\hat{d}(0)=d_0, \hat{d}(1)=0, \hat{\bar{T}}(0)=T_0$) and interior ODE collocation loss | ~6,350 | None (`nfev = 1`) |
+| **`ResMLP-Puro`** | `resmlp` | Black-box Residual MLP predicting $\log(t_{\text{evap}}), T_{s,0}, \log(\dot{m}_0)$ without physics priors or PDE residuals (ablation control) | ~11,500 | None (`nfev = 1`) |
+
+---
+
+## 2. 5-Fold Cross-Validation on V2 (2,520 Rigorous Cases)
+
+All models were cross-validated using strict case-level 5-fold splits (2,016 train / 504 validation cases per fold):
+
+| Model | CV $t_{\text{evap}}$ MAPE [%] | CV Max ARE [%] | CV $T_{s,0}$ MAE [°C] | CV $\dot{m}_0$ MAPE [%] | CV $d(t)$ MAE [mm] | CV $\bar{T}(t)$ MAE [°C] |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **PINN-1Eq** (`pinn_c`) | **0.34%** | 3.02% | 10.31 | 304.31% | **0.0036** | — |
+| **PINN-2Eq** (`pinn_2eq`) | **0.64%** | **1.53%** | **0.29** | **5.22%** | 0.0076 | **0.024** |
+| **PI-DeepONet** (`pi_deeponet`) | 0.94% | 4.48% | 0.36 | 7.90% | 0.0252 | 2.420 |
+| **ResMLP-Puro** (`resmlp`) | 8.74% | 47.66% | 1.21 | 548.48% | — | — |
+
+![PINN Loss Convergence](figures/pinn/pinn_loss_convergence.png)
+
+---
+
+## 3. Global Accuracy & Speedup Benchmark (25-Case CWU + Full V2 Suite)
+
+Combined benchmark across the 25 representative cases ($N=10$ reps) and the full 2,520-case V2 dataset:
+
+| Model | Type | Exec Time [s] | Speedup | nfev med. | CWU | V2 $t_{\text{evap}}$ MAPE [%] | V2 Max ARE [%] | V2 $\dot{m}_0$ MAPE [%] | V2 $T_{s,0}$ MAE [°C] |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **Riguroso** | Physical | 0.03798 | 1.0× | 7468 | 76539 | 0.00% | 0.00% | 0.00% | 0.00 |
+| **No-Stefan** (`level_2`) | Physical Red. | 0.01821 | 2.0× | 7420 | 12532 | 0.26% | 0.80% | 1.75% | 0.02 |
+| **PINN-1Eq** (`pinn_c`) | PINN (1-Eq) | 0.00056 | **69.1×** | 303 | 5890 | **0.31%** | 2.84% | 303.78% | 10.31 |
+| **PINN-2Eq** (`pinn_2eq`) | PINN (2-Eq) | 0.00654 | **5.9×** | 1792 | 60449 | **0.59%** | **1.41%** | **7.85%** | **0.36** |
+| **Aproximado-3** (`modelo_7`) | Algebraic | 0.00023 | 169.1× | 309 | 429 | 0.91% | 4.09% | 303.89% | 10.31 |
+| **PI-DeepONet** (`pi_deeponet`) | Operator | **0.000015** | **2535.9×** | **1** | **167** | **0.92%** | 4.21% | **8.05%** | **0.36** |
+| **Aproximado-2** (`modelo_6b_refit`) | Algebraic | 0.00022 | 176.8× | 309 | 307 | 1.35% | 4.11% | 306.17% | 10.31 |
+| **ResMLP-Puro** (`resmlp`) | Black-Box NN | 0.000009 | 4255.9× | 1 | 207 | 9.59% | 33.49% | 25425.80% | 1.06 |
+
+![Pareto Front](figures/pinn/pinn_pareto_front.png)
+
+![Parity Comparison](figures/pinn/pinn_parity_comparison.png)
+
+---
+
+## 4. Coupled 2-Equation Trajectory Fidelity (100 Stratified V2 Cases)
+
+Comparison of full time-series predictions $[d(t), \bar{T}(t), T_s(t)]$ against Rigorous `:brent` trajectories:
+
+| 2-Eq Model | $d(t)$ MAE [mm] | $\bar{T}(t)$ MAE [°C] | $T_s(t)$ MAE [°C] |
+| :--- | ---: | ---: | ---: |
+| **PINN-2Eq** (`pinn_2eq`) | **0.0068** | **0.024** | **0.033** |
+| **PI-DeepONet** (`pi_deeponet`) | 0.0236 | 2.338 | 2.155 |
+
+![2-Eq Trajectories](figures/pinn/pinn_trajectories_2eq.png)
+
+---
+
+## 5. Out-of-Distribution Generalization on V1 (640 Unseen Cases)
+
+All models trained exclusively on V2 ($T_\infty \in [15, 50]\,^\circ\text{C}$, $\text{HR} \in [0.3, 0.7]$) were evaluated out-of-distribution on V1 ($T_\infty$ up to **$65\,^\circ\text{C}$**, $\text{HR} \in [0.1, 0.9]$):
+
+| Model | V2 In-Dist. MAPE [%] | V1 OOD MAPE [%] | V1 OOD Max ARE [%] | V1 OOD $\dot{m}_0$ MAPE [%] | V1 OOD $T_{s,0}$ MAE [°C] | V1 OOD $R^2$ |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **No-Stefan** (`level_2`) | 0.26% | 0.65% | 2.11% | 3.48% | 0.11 | 0.99995 |
+| **PINN-2Eq** (`pinn_2eq`) | **0.59%** | **0.89%** | **2.38%** | **6.96%** | **0.96** | **0.99996** |
+| **PINN-1Eq** (`pinn_c`) | 0.31% | 4.09% | 27.03% | 286.72% | 17.49 | 0.98863 |
+| **Aproximado-2** (`modelo_6b_refit`) | 1.35% | 5.19% | 13.16% | 298.89% | 17.49 | 0.99589 |
+| **Aproximado-3** (`modelo_7`) | 0.91% | 5.91% | 34.49% | 294.49% | 17.49 | 0.98040 |
+| **PI-DeepONet** (`pi_deeponet`) | 0.92% | 6.08% | 68.24% | 7.15% | 0.96 | 0.93843 |
+| **ResMLP-Puro** (`resmlp`) | 9.59% | 18.33% | 77.88% | 133.12% | 2.01 | 0.85888 |
+
+![V1 Out-of-Distribution Generalization](figures/pinn/pinn_v1_extrapolation.png)
+
+---
+
+## 6. Key Engineering Conclusions
+
+1. **Best Overall Coupled Physics Surrogate (`PINN-2Eq`)**: Achieves **0.59% V2 MAPE** (`1.41%` max error), **0.024 °C** trajectory temperature accuracy, **7.85%** $\dot{m}_0$ MAPE (reducing initial flux error by **~40×** compared to `modelo_7`), and **0.89% V1 OOD MAPE** (`2.38%` max error) when extrapolating to $T_\infty = 65^\circ\text{C}$ and $\text{HR}=10\text{–}90\%$.
+2. **Highest-Accuracy 1-Equation ODE Surrogate (`PINN-1Eq`)**: Cuts `modelo_7`'s V2 MAPE by **3×** (from `0.91%` to **`0.31%`**) at **`69×` speedup** over the rigorous solver.
+3. **Fastest Operator Surrogate (`PI-DeepONet`)**: Matches `modelo_7` accuracy on V2 (**0.92% MAPE**) with zero ODE solver steps (`nfev = 1`, **15 µs** per simulation, **2,536× speedup**, **167 CWU**), while improving initial flux accuracy from `304%` to **`8.05%`**.
+4. **Value of Physics Constraints (`PINN` vs `ResMLP-Puro`)**: Pure black-box `ResMLP-Puro` degrades to `9.59%` in-distribution and `18.33%` out-of-distribution (`25,426%` initial flux error), confirming that embedding thermodynamic conservation laws and Biot/Spalding structure is essential for surrogate fidelity and generalization.
+
+---
+
+- **Core Implementation**: [pinn_surrogates.jl](file:///d:/programacion/evaporacion/julia/src/neural/pinn_surrogates.jl)
+- **Training & CV Script**: [train_jaiio_pinns.jl](file:///d:/programacion/evaporacion/JAIIO/train_jaiio_pinns.jl)
+- **Benchmark & Evaluation Script**: [evaluate_jaiio_pinns.jl](file:///d:/programacion/evaporacion/JAIIO/evaluate_jaiio_pinns.jl)
+- **CSV Metrics**: [pinn_benchmark_summary.csv](file:///d:/programacion/evaporacion/JAIIO/results/pinn_benchmark_summary.csv), [pinn_cv_metrics.csv](file:///d:/programacion/evaporacion/JAIIO/results/pinn_cv_metrics.csv), [pinn_v2_all_metrics.csv](file:///d:/programacion/evaporacion/JAIIO/results/pinn_v2_all_metrics.csv), [pinn_v1_all_metrics.csv](file:///d:/programacion/evaporacion/JAIIO/results/pinn_v1_all_metrics.csv)

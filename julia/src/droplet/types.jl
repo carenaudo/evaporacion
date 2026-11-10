@@ -1,6 +1,18 @@
 # Types for rigorous spherical droplet evaporation
 
-export DropletParams, DropletAlgebraic, DropletLiquidState, ChebyshevTsSurrogate, BicubicLutTsSurrogate
+export DropletParams, DropletAlgebraic, DropletLiquidState, ChebyshevTsSurrogate, BicubicLutTsSurrogate, TsSolverCounter, reset!
+
+"""
+    TsSolverCounter
+
+Lightweight mutable counter for tracking root-finder calls and inner iterations during benchmarking.
+"""
+mutable struct TsSolverCounter
+    calls::Int
+    iters::Int
+end
+TsSolverCounter() = TsSolverCounter(0, 0)
+reset!(c::TsSolverCounter) = (c.calls = 0; c.iters = 0; c)
 
 """
     ChebyshevTsSurrogate
@@ -45,7 +57,7 @@ Base.@kwdef struct DropletParams{T<:Real}
     correlation::Symbol = :frossling
     as1989_blowing::Bool = true
     fixed_chi_m::Bool = false
-    model_variant::Symbol = :abramzon_sirignano  # :d2_classic, :d2_stefan, :d2_convective, :abramzon_sirignano
+    model_variant::Symbol = :abramzon_sirignano  # :abramzon_sirignano, :level_1, :level_2, :d2_classic, :d2_stefan, :d2_convective, :d2_revised_dallabarba
     terminal_velocity::Bool = false             # dynamically evaluate U_rel = calc_terminal_velocity(d, T_eg_K, P_atm)
     isothermal::Bool = false                    # if true, droplet temperature is held fixed (dT/dt = 0)
     T_d_fixed::Float64 = NaN                    # fixed droplet temperature (°C); if NaN, defaults to Stull T_wb
@@ -57,6 +69,7 @@ Base.@kwdef struct DropletParams{T<:Real}
     use_wilke_mixtures::Bool = false            # when true, uses Wilke binary mixing for gas viscosity and conductivity
     ts_solver::Symbol = :newton                 # :brent, :newton, :halley, :analytical_biot, :analytical_halley, :dae, :chebyshev, :lut
     ts_surrogate::Any = nothing                 # precomputed ChebyshevTsSurrogate or BicubicLutTsSurrogate (or nothing for auto-cache)
+    ts_counter::Union{Nothing, TsSolverCounter} = nothing # optional counter for Ts solver calls & iterations
 end
 
 """

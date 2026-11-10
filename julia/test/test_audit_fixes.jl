@@ -147,3 +147,49 @@ end
     @test m_i[2] > 0.0
     @test isapprox(m_tot, sum(m_i), rtol=1e-3)
 end
+
+@testset "Audit Fixes: Category 5 - Level 1 / Level 2 Linear Fluxes & Counter" begin
+    T_inf = 35.0
+    Y_inf = surface_mass_fraction_from_psat(0.4 * psat_water(T_inf + T_ZERO_C), P_ATM)
+    d0 = 200e-6
+    T0 = 20.0
+    m0 = liquid_density_water(T0 + T_ZERO_C) * (π / 6.0) * (d0^3)
+
+    for variant in (:level_1, :level_2)
+        ctr = TsSolverCounter()
+        p = DropletParams(
+            T_inf = T_inf,
+            U_rel = 2.0,
+            Y_inf = Y_inf,
+            profile = :parabolico,
+            model_variant = variant,
+            ts_solver = :brent,
+            ts_counter = ctr
+        )
+        Ts = solve_surface_temperature(m0, T0, p)
+        alg = calc_droplet_algebraic(m0, T0, Ts, p)
+        @test ctr.calls == 1
+        @test ctr.iters > 0
+
+        # Exact linear flux relations (no log1p(B_M) / log1p_over_x(B_T))
+        sh_expected = (variant === :level_1) ? 2.0 : alg.Sh0
+        nu_expected = (variant === :level_1) ? 2.0 : alg.Nu0
+        @test alg.Sh_star ≈ sh_expected
+        @test alg.Nu_star ≈ nu_expected
+
+        T_eg_K = (Ts + T_inf) / 2.0 + T_ZERO_C
+        Dab = gas_diffusivity_water_air(T_eg_K, P_ATM)
+        rg  = gas_density_air(T_eg_K, P_ATM)
+        kg  = gas_thermal_conductivity_air(T_eg_K)
+        Y_s = surface_mass_fraction_from_psat(psat_water(Ts + T_ZERO_C), P_ATM)
+
+        m_dot_lin = π * alg.d * rg * Dab * sh_expected * (Y_s - Y_inf)
+        q_g_lin   = π * alg.d * kg * nu_expected * (T_inf - Ts)
+        @test isapprox(alg.m_dot, m_dot_lin; rtol=1e-10)
+        @test isapprox(alg.q_g, q_g_lin; rtol=1e-10)
+
+        # Intensive surface residual must vanish at solved Ts
+        liq = precompute_liquid_state(m0, T0, p)
+        @test abs(intensive_surface_residual(Ts, liq, p)) < 1e-6
+    end
+end

@@ -88,9 +88,9 @@ sol_6b = solve_surrogate(cfg_6b)
 t_evap_6b = sol_6b.t[end]
 println("   Modelo 6b Refit lifetime: $(round(t_evap_6b, digits=2)) s (final V: $(round(sol_6b.u[end][1], digits=6)) mm³)")
 
-# Modelo 8 Dynamic (coupled V & T)
-cfg_m8 = SurrogateConfig(
-    model_type = :modelo_8_dynamic,
+# Modelo 7 (calibrated multi-variable surrogate)
+cfg_m7 = SurrogateConfig(
+    model_type = :modelo_7,
     d0_mm = D0_MM,
     T_inf = T_INF,
     T_wb = T_wb_val,
@@ -99,9 +99,9 @@ cfg_m8 = SurrogateConfig(
     T0 = T0_C,
     t_end = 800.0
 )
-sol_m8 = solve_surrogate(cfg_m8)
-t_evap_m8 = sol_m8.t[end]
-println("   Modelo 8 Dynamic lifetime: $(round(t_evap_m8, digits=2)) s (final V: $(round(sol_m8.u[end][1], digits=6)) mm³)")
+sol_m7 = solve_surrogate(cfg_m7)
+t_evap_m7 = sol_m7.t[end]
+println("   Modelo 7 lifetime: $(round(t_evap_m7, digits=2)) s (final V: $(round(sol_m7.u[end][1], digits=6)) mm³)")
 
 # ----------------------------------------------------
 # 3. 1D RADIAL CONDUCTION MOVING-BOUNDARY PDE
@@ -224,10 +224,10 @@ t_6b = sol_6b.t
 V_6b = [u[1] for u in sol_6b.u]
 d2_6b = (6.0 .* V_6b ./ π).^(2.0 / 3.0)
 
-# Modelo 8
-t_m8 = sol_m8.t
-V_m8 = [u[1] for u in sol_m8.u]
-d2_m8 = (6.0 .* V_m8 ./ π).^(2.0 / 3.0)
+# Modelo 7
+t_m7 = sol_m7.t
+V_m7 = [u[1] for u in sol_m7.u]
+d2_m7 = (6.0 .* V_m7 ./ π).^(2.0 / 3.0)
 
 # 1D Radial PDE
 t_pde = sol_pde.t
@@ -235,19 +235,19 @@ R_pde_mm = sol_pde.R .* 1000.0
 d2_pde = (2.0 .* R_pde_mm).^2
 V_pde = (4.0 / 3.0) .* π .* (R_pde_mm.^3)
 
-t_max_fly = max(t_evap_rig, t_evap_6b, t_evap_m8, t_evap_pde) * 1.05
+t_max_fly = max(t_evap_rig, t_evap_6b, t_evap_m7, t_evap_pde) * 1.05
 
 p1a = plot(title="Flying Droplet d²-law Kinetics (T∞=35°C, HR=40%, U=0.5m/s)",
            xlabel="Time [s]", ylabel="d² / d₀² [-]", xlim=(0, t_max_fly), ylim=(0, 1.05))
 plot!(p1a, t_rig, d2_rig ./ d2_0, label="Rigorous (Abramzon-Sirignano)", color=:navy, lw=2.5)
 plot!(p1a, t_6b, d2_6b ./ d2_0, label="Modelo 6b Refit (Calibrated)", color=:crimson, lw=2, ls=:dash)
-plot!(p1a, t_m8, d2_m8 ./ d2_0, label="Modelo 8 Dynamic (Coupled)", color=:darkgreen, lw=2, ls=:dot)
+plot!(p1a, t_m7, d2_m7 ./ d2_0, label="Modelo 7 (Multi-Var Calibrated)", color=:darkgreen, lw=2, ls=:dot)
 plot!(p1a, t_pde, d2_pde ./ d2_0, label="1D Radial Conduction PDE", color=:darkorange, lw=2, ls=:dashdot)
 
 p1b = plot(xlabel="Time [s]", ylabel="Volume V(t) [mm³]", xlim=(0, t_max_fly), ylim=(0, V0_mm3*1.05))
 plot!(p1b, t_rig, V_rig, label="Rigorous", color=:navy, lw=2.5)
 plot!(p1b, t_6b, V_6b, label="Modelo 6b Refit", color=:crimson, lw=2, ls=:dash)
-plot!(p1b, t_m8, V_m8, label="Modelo 8 Dynamic", color=:darkgreen, lw=2, ls=:dot)
+plot!(p1b, t_m7, V_m7, label="Modelo 7", color=:darkgreen, lw=2, ls=:dot)
 plot!(p1b, t_pde, V_pde, label="1D Radial PDE", color=:darkorange, lw=2, ls=:dashdot)
 
 fig1 = plot(p1a, p1b, layout=(2, 1), size=(850, 750))
@@ -260,7 +260,6 @@ p2 = plot(title="Flying Droplet Thermal Dynamics (T₀=22°C, T∞=35°C, HR=40%
           xlabel="Time [s]", ylabel="Temperature [°C]", xlim=(0, t_max_fly), ylim=(15, 36), legend=:bottomright)
 plot!(p2, t_rig, df_rig.T_bar, label="Rigorous Mean T_bar(t)", color=:blue, lw=2.5)
 plot!(p2, t_rig, df_rig.Ts, label="Rigorous Surface Ts(t)", color=:deepskyblue, lw=2, ls=:dash)
-plot!(p2, t_m8, [u[2] for u in sol_m8.u], label="Modelo 8 Dynamic T(t)", color=:darkgreen, lw=2, ls=:dot)
 # PDE center and surface
 T_pde_center = sol_pde.T_profile[:, 1]
 T_pde_surf = sol_pde.T_profile[:, end]

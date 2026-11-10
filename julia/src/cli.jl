@@ -50,7 +50,7 @@ function parse_commandline(args=ARGS)
             help = "Droplet internal profile: uniforme, parabolico, cubico"
             default = "parabolico"
         "--surrogate-type"
-            help = "Surrogate model: modelo_2b, modelo_4, modelo_5, modelo_6, modelo_6b_refit, modelo_7, modelo_8, modelo_8_dynamic"
+            help = "Surrogate model: modelo_2b, modelo_4, modelo_5, modelo_6, modelo_6b_refit, modelo_7"
             default = "modelo_6b_refit"
         "--sessile-mode"
             help = "Sessile evaporation mode: CR, CA, SS, SJ"

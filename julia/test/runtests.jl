@@ -88,8 +88,8 @@ using Lux
         sol_6b = solve_surrogate(cfg_6b)
         @test sol_6b.u[end][1] < sol_6b.u[1][1]
 
-        cfg_8 = SurrogateConfig(
-            model_type = :modelo_8,
+        cfg_7 = SurrogateConfig(
+            model_type = :modelo_7,
             d0_mm = 1.0,
             T_inf = 35.0,
             T_wb = 23.0,
@@ -98,9 +98,9 @@ using Lux
             T0 = 22.0,
             t_end = 5.0
         )
-        sol_8 = solve_surrogate(cfg_8)
-        @test length(sol_8.u[1]) == 2
-        @test sol_8.u[end][1] < sol_8.u[1][1]
+        sol_7 = solve_surrogate(cfg_7)
+        @test length(sol_7.u[1]) == 1
+        @test sol_7.u[end][1] < sol_7.u[1][1]
     end
 
     @testset "Sessile Droplet Suite" begin
@@ -163,6 +163,55 @@ using Lux
         state_cond = zeros(Float32, 7)
         delta_u = Evaporacion.Neural.Option3cHybridAttn.evaluate_hybrid_residual(model_3c, ps_3c, st_3c, state_cond)
         @test length(delta_u) == 2
+    end
+
+    @testset "Physics-Informed Neural & Operator Surrogates" begin
+        rng = Random.MersenneTwister(123)
+        p_c    = PINNCSurrogate(PINNSurrogates.init_mlp_params(rng, [9, 24, 24, 1]; out_scale=0.01))
+        p_2eq  = PINN2EqSurrogate(PINNSurrogates.init_mlp_params(rng, [10, 32, 32, 3]; out_scale=0.01))
+        p_deep = PIDeepONetSurrogate(
+            PINNSurrogates.init_mlp_params(rng, [10, 48, 48, 3 + 3 * 16]; out_scale=0.02),
+            PINNSurrogates.init_mlp_params(rng, [4, 24, 24, 16]; out_scale=0.05)
+        )
+        p_res  = ResMLPSurrogate(
+            PINNSurrogates.init_mlp_params(rng, [5, 64, 64, 64, 1]; out_scale=0.05),
+            PINNSurrogates.init_mlp_params(rng, [5, 48, 48, 2]; out_scale=0.05),
+            zeros(5), ones(5)
+        )
+
+        # 1. PINN-C ODE vs Gauss-Legendre consistency & monotonic evaporation
+        t_gl  = PINNSurrogates.pinn_c_predict_tevap(p_c, 0.5, 1.0, 15.0, 35.0, 0.4)
+        sol_c = solve_pinn_c(p_c, 0.5, 1.0, 15.0, 35.0, 0.4; t_end=30000.0)
+        @test t_gl > 0.0
+        @test isapprox(Float64(sol_c.t[end]), t_gl; rtol=1e-2)
+        @test sol_c.u[end][1] < sol_c.u[1][1]
+
+        # 2. PINN-2Eq coupled [V, T_bar] conservation
+        sol_2eq = solve_pinn_2eq(p_2eq, 0.5, 1.0, 15.0, 35.0, 0.4; t_end=30000.0)
+        @test length(sol_2eq.u[1]) == 2
+        @test sol_2eq.u[end][1] < sol_2eq.u[1][1]
+        @test 10.0 < sol_2eq.u[end][2] < 35.0
+
+        # 3. PI-DeepONet exact Hard Boundary Conditions: d(0)=d0, d(1)=0, T(0)=T0
+        # For T0=15°C < T_dew(~19.4°C at Tinf=35°C, HR=40%), initial condensation occurs (m_dot_0 < 0);
+        # for T0=25°C > T_dew, initial evaporation occurs (m_dot_0 > 0).
+        op = deeponet_eval_case(p_deep, 0.5, 1.0, 15.0, 35.0, 0.4; taus=[0.0, 0.5, 1.0])
+        @test isapprox(op.d_mm[1], 0.5; atol=1e-12)
+        @test isapprox(op.d_mm[end], 0.0; atol=1e-12)
+        @test isapprox(op.T_bar[1], 15.0; atol=1e-12)
+        @test op.m_dot_0_kgs < 0.0
+        @test op.t_evap_s > 0.0
+        op_evap = deeponet_eval_case(p_deep, 0.5, 1.0, 25.0, 35.0, 0.4; taus=[0.0, 0.5, 1.0])
+        @test op_evap.m_dot_0_kgs > 0.0
+
+        # 4. Bundle serialization round-trip
+        tmp_npz = tempname() * ".npz"
+        bundle = PINNSurrogateBundle(p_c, p_2eq, p_deep, p_res)
+        save_pinn_bundle(bundle, tmp_npz)
+        loaded = load_pinn_bundle(tmp_npz)
+        op2 = deeponet_eval_case(loaded.pi_deeponet, 0.5, 1.0, 15.0, 35.0, 0.4; taus=[0.0, 0.5, 1.0])
+        @test isapprox(op2.t_evap_s, op.t_evap_s; rtol=1e-12)
+        rm(tmp_npz; force=true)
     end
 
     include("test_phase1_evaporation.jl")
