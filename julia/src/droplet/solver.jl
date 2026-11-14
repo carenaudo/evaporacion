@@ -120,6 +120,11 @@ end
 
 Integrate the droplet evaporation ODE/DAE system from tspan[1] to tspan[2].
 Automatically handles Strategy C (:dae) with singular mass-matrix formulation.
+
+A scalar `atol` is applied to the mass relative to the initial mass (`atol * m0`, in kg)
+and to `T_bar` as is (°C). Droplet masses are 1e-13 to 1e-6 kg, so an absolute tolerance in
+kg would exceed the whole mass of a small drop and leave its error uncontrolled. Pass a
+vector to set both tolerances explicitly.
 """
 function solve_droplet(
     params::DropletParams, u0::AbstractVector, tspan::Tuple{Real, Real};
@@ -149,6 +154,7 @@ function solve_droplet(
         # Standard 2-variable ODE [m, T_bar]
         prob = ODEProblem(droplet_ode_rhs!, float.(u0[1:2]), float.(tspan), params)
         ode_solver = solver === nothing ? Tsit5() : solver
-        return solve(prob, ode_solver; callback=cb, reltol=rtol, abstol=atol, kwargs...)
+        abstol = atol isa Real ? [Float64(atol) * abs(Float64(ForwardDiff.value(u0[1]))), Float64(atol)] : atol
+        return solve(prob, ode_solver; callback=cb, reltol=rtol, abstol=abstol, kwargs...)
     end
 end

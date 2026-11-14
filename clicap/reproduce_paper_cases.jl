@@ -65,28 +65,30 @@ model_labels = ["a (Ley D² clásica)", "b (Ley D² c/ Stefan)", "c (Ley D² c/ 
 # Container for Table 2 results
 records_t2 = []
 
-# Reference values from paper Table 2 for comparison
+# Table 2 of the RevICAp 2026 draft, for comparison. These were computed with an absolute
+# tolerance of 1e-9 kg on the mass (larger than the whole mass of the smaller drops) and with
+# model d using the parabolic profile; replace them with this script's output once rerun.
 paper_ref = Dict(
-    # (model, d0_um) => (Case 1 paper, Case 7 paper)
-    (:d2_classic, 50.0) => (1.26, 0.18),
-    (:d2_stefan, 50.0) => (1.27, 0.29),
-    (:d2_convective, 50.0) => (1.19, 0.17),
-    (:abramzon_sirignano, 50.0) => (3.13, 1.35),
+    # (model, d0_um) => (Case 1 draft, Case 7 draft)
+    (:d2_classic, 50.0) => (3.46, 1.29),
+    (:d2_stefan, 50.0) => (3.44, 1.26),
+    (:d2_convective, 50.0) => (3.24, 1.17),
+    (:abramzon_sirignano, 50.0) => (2.9, 1.0),
 
-    (:d2_classic, 200.0) => (20.4, 2.95),
-    (:d2_stefan, 200.0) => (20.4, 2.91),
-    (:d2_convective, 200.0) => (14.4, 2.15),
-    (:abramzon_sirignano, 200.0) => (36.1, 15.6),
+    (:d2_classic, 200.0) => (78.66, 25.97),
+    (:d2_stefan, 200.0) => (78.43, 25.63),
+    (:d2_convective, 200.0) => (32.45, 17.68),
+    (:abramzon_sirignano, 200.0) => (34.99, 12.48),
 
-    (:d2_classic, 600.0) => (184.0, 27.0),
-    (:d2_stefan, 600.0) => (183.0, 26.1),
-    (:d2_convective, 600.0) => (78.0, 11.8),
-    (:abramzon_sirignano, 600.0) => (190.0, 83.0),
+    (:d2_classic, 600.0) => (535.65, 203.78),
+    (:d2_stefan, 600.0) => (532.28, 192.36),
+    (:d2_convective, 600.0) => (196.41, 94.5),
+    (:abramzon_sirignano, 600.0) => (189.99, 69.62),
 
-    (:d2_classic, 1200.0) => (735.0, 106.0),
-    (:d2_stefan, 1200.0) => (733.0, 105.0),
-    (:d2_convective, 1200.0) => (203.0, 31.0),
-    (:abramzon_sirignano, 1200.0) => (488.0, 214.0)
+    (:d2_classic, 1200.0) => (2143.87, 738.52),
+    (:d2_stefan, 1200.0) => (2137.95, 734.49),
+    (:d2_convective, 1200.0) => (616.29, 218.97),
+    (:abramzon_sirignano, 1200.0) => (495.14, 183.96)
 )
 
 function simulate_inflight_case(m_sym, d0, T_K, HR_frac)
@@ -114,13 +116,18 @@ function simulate_inflight_case(m_sym, d0, T_K, HR_frac)
         model_variant = m_sym,
         terminal_velocity = is_conv,
         isothermal = isothermal,
-        T_d_fixed = T_wb_C
+        T_d_fixed = T_wb_C,
+        profile = :uniforme,     # model d: uniform droplet temperature (Methods, d.3)
+        frossling_coef = 0.553   # Eqs. 8 and 13
     )
 
     t_est = (d0 / 50e-6)^2 * 10.0
     tspan = (0.0, max(100.0, t_est * 3.0))
 
     sol = solve_droplet(params, [m0, T_init_C], tspan)
+    # sol.t[end] is the lifetime only if the mass callback stopped the run
+    string(sol.retcode) == "Terminated" ||
+        error("$m_sym, d0 = $(d0 * 1e6) µm, T = $T_K K did not evaporate within tspan ($(sol.retcode))")
     return sol.t[end]
 end
 
@@ -187,7 +194,9 @@ for (c_num, T_K, HR_val) in cases_fig3
             model_variant = m_sym,
             terminal_velocity = is_conv,
             isothermal = isothermal,
-            T_d_fixed = T_wb_C
+            T_d_fixed = T_wb_C,
+            profile = :uniforme,
+            frossling_coef = 0.553
         )
 
         # Evaluate initial algebraic state at t=0
@@ -264,11 +273,12 @@ d0_sessile = 200e-6
 V0_sessile = sphere_volume_from_d(d0_sessile)
 contact_angles_deg = [20.0, 40.0, 80.0]
 
+# Table 3 of the RevICAp 2026 draft (Case 7), for comparison
 paper_t3_ref = Dict(
     # theta => (AC, RC, SS, SJ)
-    20.0 => (3.35, 2.30, 3.05, 2.61),
-    40.0 => (4.00, 2.87, 3.76, 3.26),
-    80.0 => (4.40, 3.56, 4.01, 3.76)
+    20.0 => (5.32, 3.66, 4.54, 4.86),
+    40.0 => (6.34, 4.54, 5.55, 5.89),
+    80.0 => (7.03, 5.65, 6.56, 6.81)
 )
 
 records_t3 = []
@@ -302,7 +312,8 @@ for T_eval in [313.15, 283.15]
         cfg_sj = SessileDropletConfig(D=D_val, delta_c=delta_c, rho_l=rho_l, R0=R0, theta0=th0, theta_min=th0/2.0, theta_max=th0, mode=:SJ, t_end=200.0)
         sol_sj = solve_sessile(cfg_sj)
 
-        p_vals = paper_t3_ref[th_deg]
+        # the draft reports Case 7 only
+        p_vals = T_eval == 313.15 ? paper_t3_ref[th_deg] : (missing, missing, missing, missing)
 
         for (m_label, t_ana, p_val) in [
             ("AC", sol_ca.t_evap_analytical, p_vals[1]),

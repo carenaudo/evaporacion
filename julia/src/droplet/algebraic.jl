@@ -55,7 +55,7 @@ function _compute_gas_transport_and_fluxes(
 
     local Nu_star, Sh_star, B_T, F_M, F_T, phi
     if params.as1989_blowing
-        as_sol = solve_as1989_transfer(Re, Pr, Sc, bm_clamped, cpv, cpg, Dab * rg * cpg / kg)
+        as_sol = solve_as1989_transfer(Re, Pr, Sc, bm_clamped, cpv, cpg, Dab * rg * cpg / kg; coef=params.frossling_coef)
         Nu0     = as_sol.Nu0
         Sh0     = as_sol.Sh0
         Nu_star = as_sol.Nu_star
@@ -81,7 +81,7 @@ function _compute_gas_transport_and_fluxes(
     elseif params.model_variant === :d2_stefan
         rg * Dab * ln_BM
     elseif params.model_variant === :d2_convective
-        Sh_conv = nusselt_froessling(Re, Sc; coef=0.553)
+        Sh_conv = sherwood_froessling(Re, Sc; coef=params.frossling_coef)
         T(0.5) * rg * Dab * Sh_conv * (Y_s - Y_inf_c)
     elseif params.model_variant === :d2_revised_dallabarba
         T(0.5) * rg * Dab * Sh0 * ln_BM
@@ -170,8 +170,8 @@ function calc_droplet_algebraic(
     if params.correlation === :clift
         Nu0, Sh0 = clift_correlation(Re, Pr, Sc)
     else
-        Nu0 = nusselt_froessling(Re, Pr)
-        Sh0 = sherwood_froessling(Re, Sc)
+        Nu0 = nusselt_froessling(Re, Pr; coef=params.frossling_coef)
+        Sh0 = sherwood_froessling(Re, Sc; coef=params.frossling_coef)
     end
 
     # Vapor mass fraction at surface and Spalding numbers
@@ -321,8 +321,8 @@ function intensive_surface_residual(Ts::Ts_t, liq::DropletLiquidState{T}, params
     if params.correlation === :clift
         Nu0, Sh0 = clift_correlation(Re, Pr, Sc)
     else
-        Nu0 = nusselt_froessling(Re, Pr)
-        Sh0 = sherwood_froessling(Re, Sc)
+        Nu0 = nusselt_froessling(Re, Pr; coef=params.frossling_coef)
+        Sh0 = sherwood_froessling(Re, Sc; coef=params.frossling_coef)
     end
 
     P_sat_s = psat_water(Ts_K)

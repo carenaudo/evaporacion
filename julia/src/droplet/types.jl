@@ -55,6 +55,7 @@ Base.@kwdef struct DropletParams{T<:Real}
     P_atm::Float64 = 101325.0
     profile::Symbol = :parabolico
     correlation::Symbol = :frossling
+    frossling_coef::Float64 = 0.552             # Frössling coefficient in Sh0/Nu0 = 2 + c Re^1/2 (Sc|Pr)^1/3, used by every model variant
     as1989_blowing::Bool = true
     fixed_chi_m::Bool = false
     model_variant::Symbol = :abramzon_sirignano  # :abramzon_sirignano, :level_1, :level_2, :d2_classic, :d2_stefan, :d2_convective, :d2_revised_dallabarba

@@ -221,5 +221,6 @@ using Lux
     include("test_phase5_extinction.jl")
     include("test_audit_fixes.jl")
     include("test_ts_solvers.jl")
+    include("test_d2_lifetime.jl")
 
 end
