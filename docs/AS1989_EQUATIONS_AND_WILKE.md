@@ -174,7 +174,7 @@ B_T = (1+B_M)^(φ)-1
 
 **Eq. (24) - Heat into liquid phase** (Revised OK)
 ```julia
-Q_L = m_dot*(cp_f_film*(T_inf-T_s)/B_T+L(T_s))
+Q_L = m_dot*(cp_f_film*(T_inf-T_s)/B_T-L(T_s))
 ```
 
 ## Internal Circulation, Reynolds & Peclet
